@@ -18,17 +18,21 @@ politeness), P1 stage 1 (tiered router + Chromium engine), hybrid
 discovery (`--fallback-column` + `--fallback-selector` on http_4xx /
 dns_failure), sitemap parsing (`trawl sitemap <url>`, library at
 `internal/sitemap`), per-domain tier learning (`internal/tierlearn`,
-persistent cache at `$TRAWL_HOME/tier-cache`).
+persistent cache at `$TRAWL_HOME/tier-cache`), content extraction
+(`--format html|markdown`, `--readability`, automatic page metadata
+with Open Graph + Twitter + JSON-LD + published_at at
+`internal/extract/{metadata,markdown,readability}.go`).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
 **Deferred:** Lightpanda — see DECISIONS.md for the decision rule
 and the three data points (11.4% → 4.4% → 14.08% escalation).
 
-**Current direction:** content extraction bundle — HTML → markdown,
-metadata (title/OG/canonical), boilerplate removal via readability.
-The goal is closing the "give me clean content from a URL" gap vs
-Firecrawl without chasing its LLM/proxy/webhook surface area. See
-`docs/ROADMAP.md` for the full phase plan.
+**Current direction:** BFS crawl mode — `trawl crawl <url> --depth N
+--same-domain --limit N`. Reuses the persistent frontier with workers
+blocking on empty queue instead of exiting. Composes with the
+content-extraction phase to become "give me clean markdown from an
+entire site." See `docs/ROADMAP.md` for the phased plan and the
+explicit out-of-scope list.
 
 ## Read these first
 

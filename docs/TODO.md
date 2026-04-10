@@ -7,12 +7,17 @@ one rises in priority.
 
 ## Standing commitments (not papercuts — falsifiable plans)
 
-- **Lightpanda decision is deferred until Phase 0 benchmark data exists.**
-  See `docs/BENCHMARK.md` §"Decision rule: does Lightpanda ship at all?" for
-  the thresholds and the non-negotiable "same-day" Phase 0 trigger. The
-  original P1 stage 2 plan (build Lightpanda now) is on hold pending data —
-  **not abandoned**. If you're reading this and Phase 0 has run, go read the
-  stats.json and execute the decision rule, don't punt it forward.
+- **Lightpanda decision stays closed pending new Phase 0 data.** Three
+  runs have now executed the decision rule from `docs/BENCHMARK.md`:
+  Run A (n=500, pricing_url only, 11.4% chromium rate), Run B (n=500,
+  homepage + follow-link, 4.4%), Run C (n=999, hybrid discovery,
+  14.08%). All three fall below the 15% reopen threshold, but Run C
+  came within 0.9 points and the trend across runs is directional
+  toward the threshold. See `docs/DECISIONS.md` for the full three-
+  addendum entry, including the "caveat the next session must know"
+  about measurable-population bias. The rule auto-reopens if a future
+  run shows ≥15% chromium escalation on n≥500 reachable — do not
+  build Lightpanda before that evidence lands.
 
 ---
 
