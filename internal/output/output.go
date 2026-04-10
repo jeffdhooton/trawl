@@ -10,16 +10,20 @@ import (
 // Record is the canonical shape of one scraped page's output.
 // The JSON tags are the stable on-disk format.
 type Record struct {
-	URL          string         `json:"url"`
-	CanonicalURL string         `json:"canonical_url"`
-	FetchedAt    time.Time      `json:"fetched_at"`
-	Tier         string         `json:"tier"`
-	StatusCode   int            `json:"status_code"`
-	DurationMS   int64          `json:"duration_ms"`
-	ContentHash  string         `json:"content_hash,omitempty"`
-	Extracted    map[string]any `json:"extracted,omitempty"`
-	Metadata     Metadata       `json:"metadata"`
-	Error        string         `json:"error,omitempty"`
+	URL             string         `json:"url"`
+	CanonicalURL    string         `json:"canonical_url"`
+	FetchedAt       time.Time      `json:"fetched_at"`
+	Tier            string         `json:"tier"`
+	StatusCode      int            `json:"status_code"`
+	DurationMS      int64          `json:"duration_ms"`
+	ContentHash     string         `json:"content_hash,omitempty"`
+	Extracted       map[string]any `json:"extracted,omitempty"`
+	Metadata        Metadata       `json:"metadata"`
+	Error           string         `json:"error,omitempty"`
+	// FailureCategory is the classified bucket for stats aggregation.
+	// Always populated — "success" for non-error records, one of the
+	// values in internal/failure for anything else.
+	FailureCategory string `json:"failure_category,omitempty"`
 }
 
 // Metadata holds bookkeeping fields that don't belong in Extracted.

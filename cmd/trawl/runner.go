@@ -10,10 +10,12 @@ import (
 
 	"github.com/jeffdhooton/trawl/internal/engine"
 	"github.com/jeffdhooton/trawl/internal/extract"
+	"github.com/jeffdhooton/trawl/internal/failure"
 	"github.com/jeffdhooton/trawl/internal/frontier"
 	"github.com/jeffdhooton/trawl/internal/output"
 	"github.com/jeffdhooton/trawl/internal/politeness"
 	"github.com/jeffdhooton/trawl/internal/router"
+	"github.com/jeffdhooton/trawl/internal/stats"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
 )
@@ -46,6 +48,17 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	}
 	defer sink.Close()
 
+	// Dead-letter queue: a strict subset of results.jsonl containing only
+	// unreachable records (DNS / TLS / 4xx / 5xx / etc). Makes it cheap for
+	// benchmark scripts to exclude dead rows from denominators without
+	// re-filtering the full results file.
+	deadLetterPath := filepath.Join(jobDir, "dead_letter.jsonl")
+	deadLetter, err := output.NewJSONLFile(deadLetterPath)
+	if err != nil {
+		return fmt.Errorf("open dead letter: %w", err)
+	}
+	defer deadLetter.Close()
+
 	httpCfg := engine.DefaultHTTPConfig()
 	httpCfg.Timeout = cfg.timeoutDuration()
 
@@ -72,7 +85,8 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	}
 
 	var wg sync.WaitGroup
-	stats := &workerStats{start: time.Now()}
+	wstats := &workerStats{start: time.Now()}
+	collector := stats.New()
 
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
@@ -83,10 +97,18 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runWorker(ctx, id, f, gate, r, fields, sink, stats)
+			runWorker(ctx, id, f, gate, r, fields, sink, deadLetter, collector, wstats)
 		}(i)
 	}
 	wg.Wait()
+
+	// Write stats.json before we return so even interrupted runs produce
+	// a partial snapshot. Benchmark scripts depend on this artifact.
+	statsPath := filepath.Join(jobDir, "stats.json")
+	snap := collector.Snapshot(cfg.ID)
+	if err := stats.WriteJSON(statsPath, snap); err != nil {
+		log.Warn().Err(err).Msg("failed to write stats.json")
+	}
 
 	s, err := f.Stats()
 	if err != nil {
@@ -97,7 +119,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		Int("failed", s.Failed).
 		Int("queued", s.Queued).
 		Int("in_flight", s.InFlight).
-		Str("elapsed", time.Since(stats.start).Round(time.Millisecond).String()).
+		Str("elapsed", time.Since(wstats.start).Round(time.Millisecond).String()).
 		Msg("job complete")
 
 	if ctxErr := ctx.Err(); ctxErr != nil && s.Queued > 0 {
@@ -118,6 +140,8 @@ func runWorker(
 	r *router.Router,
 	fields []extract.Field,
 	sink output.Sink,
+	deadLetter output.Sink,
+	collector *stats.Collector,
 	_ *workerStats,
 ) {
 	for {
@@ -137,7 +161,7 @@ func runWorker(
 			return
 		}
 
-		processOne(ctx, rec.URL, f, gate, r, fields, sink)
+		processOne(ctx, rec.URL, f, gate, r, fields, sink, deadLetter, collector)
 	}
 }
 
@@ -149,6 +173,8 @@ func processOne(
 	r *router.Router,
 	fields []extract.Field,
 	sink output.Sink,
+	deadLetter output.Sink,
+	collector *stats.Collector,
 ) {
 	l := log.With().Str("url", canonURL).Logger()
 	firstTier := r.Tiers()[0]
@@ -159,13 +185,17 @@ func processOne(
 	}
 	if !allowed {
 		_ = f.MarkFailed(canonURL, firstTier, errors.New("blocked by robots.txt"))
-		_ = sink.Write(output.Record{
-			URL:          canonURL,
-			CanonicalURL: canonURL,
-			FetchedAt:    time.Now().UTC(),
-			Tier:         firstTier,
-			Error:        "blocked by robots.txt",
-		})
+		rejected := output.Record{
+			URL:             canonURL,
+			CanonicalURL:    canonURL,
+			FetchedAt:       time.Now().UTC(),
+			Tier:            firstTier,
+			Error:           "blocked by robots.txt",
+			FailureCategory: string(failure.CatRobotsBlocked),
+		}
+		_ = sink.Write(rejected)
+		_ = deadLetter.Write(rejected)
+		collector.Record(failure.CatRobotsBlocked, firstTier, 0)
 		return
 	}
 
@@ -194,18 +224,27 @@ func processOne(
 	if err := sink.Write(record); err != nil {
 		l.Error().Err(err).Msg("write record")
 	}
+	// Dead-letter queue mirrors any unreachable record so benchmark scripts
+	// can cheaply isolate "dead data" from "real tier decisions."
+	category := failure.Category(record.FailureCategory)
+	if !category.IsReachable() {
+		if err := deadLetter.Write(record); err != nil {
+			l.Error().Err(err).Msg("write dead letter")
+		}
+	}
 
 	tier := record.Tier
 	if tier == "" {
 		tier = firstTier
 	}
+	collector.Record(category, tier, record.DurationMS)
 	if routeErr != nil || record.Error != "" {
 		msg := record.Error
 		if routeErr != nil {
 			msg = routeErr.Error()
 		}
 		_ = f.MarkFailed(canonURL, tier, errors.New(msg))
-		l.Debug().Str("tier", tier).Str("err", msg).Msg("fetch failed")
+		l.Debug().Str("tier", tier).Str("category", record.FailureCategory).Str("err", msg).Msg("fetch failed")
 		return
 	}
 	_ = f.MarkDone(canonURL, tier)

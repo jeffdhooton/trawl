@@ -14,6 +14,7 @@ import (
 	"github.com/jeffdhooton/trawl/internal/canonical"
 	"github.com/jeffdhooton/trawl/internal/engine"
 	"github.com/jeffdhooton/trawl/internal/extract"
+	"github.com/jeffdhooton/trawl/internal/failure"
 	"github.com/jeffdhooton/trawl/internal/output"
 	"github.com/jeffdhooton/trawl/internal/politeness"
 	"github.com/jeffdhooton/trawl/internal/router"
@@ -184,6 +185,7 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 			rec.Tier = outcome.Attempts[len(outcome.Attempts)-1].Tier
 		}
 		rec.Error = routeErr.Error()
+		rec.FailureCategory = string(failure.Classify(routeErr, rec.StatusCode, rec.Error))
 		return rec, routeErr
 	}
 
@@ -191,6 +193,7 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 		ex, err := extract.CSS(best.Body, fields)
 		if err != nil {
 			rec.Error = "extract: " + err.Error()
+			rec.FailureCategory = string(failure.CatExtractionFailed)
 			return rec, nil
 		}
 		rec.Metadata.Extraction = &output.ExtractionStats{
@@ -201,6 +204,10 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 			rec.Extracted = ex
 		}
 	}
+
+	// Final classification — uses the router error (if any), the final
+	// status code, and the formatted reason field together.
+	rec.FailureCategory = string(failure.Classify(routeErr, rec.StatusCode, rec.Error))
 	return rec, nil
 }
 
