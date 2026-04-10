@@ -25,6 +25,7 @@ type JobConfig struct {
 	Tiers        string    `json:"tiers"`   // comma-separated engine tier list
 	ForceTier    string    `json:"force_tier,omitempty"`
 	URLColumn    string    `json:"url_column,omitempty"`
+	FollowLink   string    `json:"follow_link,omitempty"`
 }
 
 // jobRoot returns ~/.trawl/jobs, honoring TRAWL_HOME if set.

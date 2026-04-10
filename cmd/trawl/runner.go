@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeffdhooton/trawl/internal/canonical"
 	"github.com/jeffdhooton/trawl/internal/engine"
 	"github.com/jeffdhooton/trawl/internal/extract"
 	"github.com/jeffdhooton/trawl/internal/failure"
@@ -68,6 +69,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	}
 	defer r.Close()
 
+
 	gateCfg := politeness.Default()
 	gateCfg.UserAgent = httpCfg.UserAgent
 	gateCfg.IgnoreRobots = cfg.IgnoreRobots
@@ -97,7 +99,8 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runWorker(ctx, id, f, gate, r, fields, sink, deadLetter, collector, wstats)
+			runWorker(ctx, id, f, gate, r, fields, sink, deadLetter, collector, wstats,
+				cfg.FollowLink)
 		}(i)
 	}
 	wg.Wait()
@@ -132,6 +135,59 @@ type workerStats struct {
 	start time.Time
 }
 
+// errNoMatchingLink is returned by resolveFollowLink when the prefetch
+// succeeded but no <a> matched the selector. Callers use errors.Is to
+// distinguish this from underlying fetch failures.
+var errNoMatchingLink = errors.New("no matching link")
+
+// resolveFollowLink routes the input URL through the tiered router, then
+// returns the first <a> whose href matches the CSS selector, resolved to
+// an absolute URL and canonicalized.
+//
+// The prefetch uses the FULL router (not HTTP-only) so SPA homepages can
+// escalate to chromium to discover nav links that only exist in the
+// hydrated DOM. This has a measurable cost (chromium startup per page)
+// but gives us real data on SPA nav prevalence.
+//
+// The returned tier string is the tier that served the prefetch — useful
+// for stats aggregation to understand per-tier cost of discovery.
+//
+// Errors:
+//   - errNoMatchingLink    — prefetch succeeded, selector matched nothing
+//   - anything else        — underlying fetch/canonicalize failure, wrapped
+func resolveFollowLink(
+	ctx context.Context,
+	r *router.Router,
+	inputURL string,
+	selector string,
+) (resolved, tier string, err error) {
+	outcome, routeErr := r.Route(ctx, engine.Request{URL: inputURL})
+	if routeErr != nil {
+		return "", "", routeErr
+	}
+	if outcome.Result == nil {
+		return "", outcome.Tier, fmt.Errorf("prefetch: no result")
+	}
+	res := outcome.Result
+
+	base := res.FinalURL
+	if base == "" {
+		base = inputURL
+	}
+	raw, err := extract.FirstLink(res.Body, base, selector, extract.LinkOptions{SameDomain: true})
+	if err != nil {
+		return "", outcome.Tier, fmt.Errorf("extract: %w", err)
+	}
+	if raw == "" {
+		return "", outcome.Tier, errNoMatchingLink
+	}
+	canon, err := canonical.Canonicalize(raw, canonical.Options{})
+	if err != nil {
+		return "", outcome.Tier, fmt.Errorf("canon: %w", err)
+	}
+	return canon, outcome.Tier, nil
+}
+
 func runWorker(
 	ctx context.Context,
 	id int,
@@ -143,6 +199,7 @@ func runWorker(
 	deadLetter output.Sink,
 	collector *stats.Collector,
 	_ *workerStats,
+	followSelector string,
 ) {
 	for {
 		if ctx.Err() != nil {
@@ -151,9 +208,9 @@ func runWorker(
 
 		rec, err := f.Next()
 		if errors.Is(err, frontier.ErrEmpty) {
-			// In P1 stage 1, batch mode enqueues everything up-front, so an
-			// empty frontier means we're done. (Crawl mode in a later stage
-			// will need workers to block until new URLs arrive.)
+			// Batch mode enqueues everything up-front, so an empty frontier
+			// means we're done. Full BFS crawl (later) will need workers
+			// to block until new URLs arrive.
 			return
 		}
 		if err != nil {
@@ -161,7 +218,8 @@ func runWorker(
 			return
 		}
 
-		processOne(ctx, rec.URL, f, gate, r, fields, sink, deadLetter, collector)
+		processOne(ctx, rec.URL, f, gate, r, fields, sink, deadLetter, collector,
+			followSelector)
 	}
 }
 
@@ -175,6 +233,7 @@ func processOne(
 	sink output.Sink,
 	deadLetter output.Sink,
 	collector *stats.Collector,
+	followSelector string,
 ) {
 	l := log.With().Str("url", canonURL).Logger()
 	firstTier := r.Tiers()[0]
@@ -212,7 +271,47 @@ func processOne(
 	}
 	defer release()
 
-	record, routeErr := routeAndBuild(ctx, r, canonURL, canonURL, fields)
+	// Follow-link pre-fetch: route the input URL through the full router
+	// (so SPA homepages can escalate to chromium for nav DOM), extract the
+	// first <a> matching the selector, and use THAT as the target for the
+	// real route-through-tiers fetch. The input URL becomes rec.URL; the
+	// resolved link becomes rec.CanonicalURL.
+	//
+	// Prefetch failures are classified by their UNDERLYING cause (DNS,
+	// TLS, 4xx, etc.) so stats.json shows the real failure mode, not a
+	// catch-all "follow_failed" bucket. Only "selector didn't match
+	// anything" actually uses CatFollowFailed.
+	targetURL := canonURL
+	if followSelector != "" {
+		resolved, prefetchTier, err := resolveFollowLink(ctx, r, canonURL, followSelector)
+		if err != nil {
+			cat := failure.CatFollowFailed
+			if !errors.Is(err, errNoMatchingLink) {
+				cat = failure.Classify(err, 0, err.Error())
+			}
+			tier := prefetchTier
+			if tier == "" {
+				tier = firstTier
+			}
+			rec := output.Record{
+				URL:             canonURL,
+				CanonicalURL:    canonURL,
+				FetchedAt:       time.Now().UTC(),
+				Tier:            tier,
+				Error:           "follow: " + err.Error(),
+				FailureCategory: string(cat),
+			}
+			_ = sink.Write(rec)
+			_ = deadLetter.Write(rec)
+			collector.Record(cat, tier, 0)
+			_ = f.MarkFailed(canonURL, tier, errors.New("follow: "+err.Error()))
+			return
+		}
+		targetURL = resolved
+		l.Debug().Str("resolved", resolved).Str("prefetch_tier", prefetchTier).Msg("follow-link resolved")
+	}
+
+	record, routeErr := routeAndBuild(ctx, r, targetURL, canonURL, fields)
 
 	// If the caller's context was cancelled, every tier likely failed with a
 	// deadline error — not a real failure. Leave the URL in-flight so Recover

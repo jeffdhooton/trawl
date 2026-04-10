@@ -25,6 +25,7 @@ type batchOpts struct {
 	tiers        string
 	forceTier    string
 	urlColumn    string
+	followLink   string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -63,6 +64,10 @@ gracefully and prints a resume command.`,
 		"pin a single tier for this run (overrides --tiers)")
 	cmd.Flags().StringVar(&opts.urlColumn, "url-column", "",
 		`for CSV/TSV input: column name or index holding the URL (default: "url" or first column)`)
+	cmd.Flags().StringVar(&opts.followLink, "follow-link", "",
+		`CSS selector for an <a> to follow before extracting (e.g. 'a[href*="pricing"]').`+
+			` Fetches the input URL, finds the first matching link (same-domain), and runs the`+
+			` normal tier-routed fetch+extract on the resolved link instead of the original URL.`)
 
 	return cmd
 }
@@ -100,6 +105,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		Tiers:        opts.tiers,
 		ForceTier:    opts.forceTier,
 		URLColumn:    opts.urlColumn,
+		FollowLink:   opts.followLink,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

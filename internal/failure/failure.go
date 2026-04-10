@@ -10,7 +10,14 @@
 // the inner messages are preserved verbatim.
 package failure
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+// httpStatusRe matches patterns like "http 404", "status 503", "http: 429"
+// that appear embedded in wrapped error strings coming from the router.
+var httpStatusRe = regexp.MustCompile(`(?:http|status)[: ]+(\d{3})`)
 
 // Category is one of a finite set of failure buckets. Success is included
 // so callers can classify every record uniformly.
@@ -28,6 +35,7 @@ const (
 	CatCloudflareBlock  Category = "cloudflare_block"
 	CatParked           Category = "parked_domain"
 	CatExtractionFailed Category = "extraction_failed"
+	CatFollowFailed     Category = "follow_failed"
 	CatTiersExhausted   Category = "all_tiers_exhausted"
 	CatSPAShell         Category = "spa_shell"
 	CatOther            Category = "other"
@@ -78,6 +86,8 @@ func Classify(err error, statusCode int, errReason string) Category {
 		return CatRobotsBlocked
 	case strings.Contains(msg, "spa shell"):
 		return CatSPAShell
+	case strings.Contains(msg, "follow:"):
+		return CatFollowFailed
 	}
 
 	// Parked-domain heuristic FIRST — WP Engine parking is a specific
@@ -119,11 +129,22 @@ func Classify(err error, statusCode int, errReason string) Category {
 		return CatCloudflareBlock
 	}
 
-	// Status-code buckets, if available.
+	// Status-code buckets, if available. If the caller didn't pass an
+	// explicit status code, try to recover one from the error text —
+	// router errors often look like "http: http 403" or "status 530".
+	sc := statusCode
+	if sc == 0 {
+		if m := httpStatusRe.FindStringSubmatch(msg); m != nil {
+			for i, ch := range m[1] {
+				sc = sc*10 + int(ch-'0')
+				_ = i
+			}
+		}
+	}
 	switch {
-	case statusCode >= 400 && statusCode < 500:
+	case sc >= 400 && sc < 500:
 		return CatHTTP4xx
-	case statusCode >= 500 && statusCode < 600:
+	case sc >= 500 && sc < 600:
 		return CatHTTP5xx
 	}
 
@@ -156,6 +177,7 @@ func AllCategories() []Category {
 		CatCloudflareBlock,
 		CatParked,
 		CatExtractionFailed,
+		CatFollowFailed,
 		CatTiersExhausted,
 		CatSPAShell,
 		CatOther,
