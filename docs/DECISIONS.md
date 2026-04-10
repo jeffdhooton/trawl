@@ -94,3 +94,65 @@ chromium_escalation_rate = 18 / 158 = 11.4%
 
 **Authored during session:** 2026-04-10, Claude Code with Jeff.
 **Commit reference for data:** `cf01017` + `/Users/jhoot/.trawl/jobs/phase0-500/`.
+
+### Addendum — 2026-04-10: second data point from follow-link run
+
+After building `--follow-link` (commit `ed9eac0`), re-ran the same 500-row
+seed against the `homepage` column with CSS selector
+`a[href*="pricing"], a[href*="/plans"], a[href*="/price"]`. The prefetch
+routes through the full tier router, so SPA homepages can escalate to
+chromium for nav DOM discovery.
+
+```
+Run B — homepage + follow-link + router-prefetch
+
+total           500
+reachable        91   (18.2%)
+unreachable     409
+
+successes by tier:
+  http            87   avg 183ms
+  chromium         4   avg 2.69s
+
+failures by category:
+  follow_failed   325   ← 65% of input has no <a href> match for
+                          /pricing, /plans, or /price even when the
+                          homepage renders successfully
+  dns_failure      27
+  timeout          14
+  other            12   ← homepage 4xx that router propagated
+  tls_error         9
+  all_tiers_exhausted 8
+  robots_blocked    7
+  spa_shell         3
+  parked_domain     2
+  connection_refused 2
+
+chromium_escalation_rate = 4 / 91 = 4.4%
+```
+
+**Both data points fall below the 15% reopen trigger:**
+- Run A direct pricing_url: 11.4% on n=158
+- Run B homepage + follow-link: 4.4% on n=91
+
+The Lightpanda skip decision is reinforced. The follow-link run revealed
+a distinct, larger problem: **pricing-page discovery from homepages is
+~65% miss rate** with a simple href substring selector. That's a
+product/data problem, not an engine problem — no middle tier would
+change the numerator because the failures are structural (`<button>`
+nav, client-side routing, non-matching terms like `/upgrade`).
+
+**Next steps (not yet decided):**
+
+1. Build a richer pricing-link selector library (10+ patterns including
+   `/subscribe`, `/upgrade`, `/buy`, `a:contains("Pricing")`).
+2. Implement hybrid discovery: try `pricing_url` from CSV, fall back to
+   homepage+follow-link on 4xx.
+3. Parse `/sitemap.xml` where available.
+4. Accept the ~158 reachable pricing pages as the benchmark's baseline
+   and document the 70% rot as a seed-quality finding rather than an
+   engineering gap.
+
+None of these open the Lightpanda question. This decision is closed
+pending a meaningfully different reachable sample (n ≥ 500 with a rate
+above 15%).
