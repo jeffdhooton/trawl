@@ -24,6 +24,8 @@ type batchOpts struct {
 	concurrency  int
 	ratePerSec   float64
 	jobID        string
+	tiers        string
+	forceTier    string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -56,6 +58,10 @@ gracefully and prints a resume command.`,
 		"requests per second per domain")
 	cmd.Flags().StringVar(&opts.jobID, "job-id", "",
 		"reuse/create a specific job ID (default: auto-generated)")
+	cmd.Flags().StringVar(&opts.tiers, "tiers", "http,chromium",
+		"comma-separated engine tiers to try in order (http, chromium)")
+	cmd.Flags().StringVar(&opts.forceTier, "force-tier", "",
+		"pin a single tier for this run (overrides --tiers)")
 
 	return cmd
 }
@@ -90,6 +96,8 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		IgnoreRobots: opts.ignoreRobots,
 		RatePerSec:   opts.ratePerSec,
 		Timeout:      opts.timeout.String(),
+		Tiers:        opts.tiers,
+		ForceTier:    opts.forceTier,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

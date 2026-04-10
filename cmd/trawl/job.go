@@ -22,6 +22,8 @@ type JobConfig struct {
 	RatePerSec   float64   `json:"rate_per_sec"`
 	BurstPerSec  int       `json:"burst_per_sec"`
 	Timeout      string    `json:"timeout"` // time.Duration as string for readable JSON
+	Tiers        string    `json:"tiers"`   // comma-separated engine tier list
+	ForceTier    string    `json:"force_tier,omitempty"`
 }
 
 // jobRoot returns ~/.trawl/jobs, honoring TRAWL_HOME if set.
@@ -79,4 +81,12 @@ func (c *JobConfig) timeoutDuration() time.Duration {
 		return 30 * time.Second
 	}
 	return d
+}
+
+func (c *JobConfig) tierList() []string {
+	tiers := parseTierList(c.Tiers)
+	if len(tiers) == 0 {
+		return []string{"http", "chromium"}
+	}
+	return tiers
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/jeffdhooton/trawl/internal/extract"
 	"github.com/jeffdhooton/trawl/internal/output"
 	"github.com/jeffdhooton/trawl/internal/politeness"
-	"github.com/jeffdhooton/trawl/internal/validity"
+	"github.com/jeffdhooton/trawl/internal/router"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -26,6 +26,8 @@ type scrapeOpts struct {
 	outputPath   string
 	ignoreRobots bool
 	timeout      time.Duration
+	tiers        string
+	forceTier    string
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -57,6 +59,10 @@ Use --selector name=css multiple times to extract structured fields:
 		"bypass robots.txt (logs a warning)")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 30*time.Second,
 		"HTTP request timeout")
+	cmd.Flags().StringVar(&opts.tiers, "tiers", "http,chromium",
+		"comma-separated engine tiers to try in order (http, chromium)")
+	cmd.Flags().StringVar(&opts.forceTier, "force-tier", "",
+		"pin a single tier for this run (overrides --tiers)")
 
 	return cmd
 }
@@ -81,13 +87,20 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	}
 	defer sink.Close()
 
-	cfg := engine.DefaultHTTPConfig()
-	cfg.Timeout = opts.timeout
-	httpEngine := engine.NewHTTP(cfg)
-	defer httpEngine.Close()
+	httpCfg := engine.DefaultHTTPConfig()
+	httpCfg.Timeout = opts.timeout
+	tiers := parseTierList(opts.tiers)
+	if len(tiers) == 0 && opts.forceTier == "" {
+		tiers = []string{"http", "chromium"}
+	}
+	r, err := buildRouter(tiers, opts.forceTier, httpCfg)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
 
 	gateCfg := politeness.Default()
-	gateCfg.UserAgent = cfg.UserAgent
+	gateCfg.UserAgent = httpCfg.UserAgent
 	gateCfg.IgnoreRobots = opts.ignoreRobots
 	gate := politeness.NewGate(gateCfg, nil)
 
@@ -109,12 +122,12 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	}
 	defer release()
 
-	rec, err := fetchAndBuild(ctx, httpEngine, canonURL, rawURL, fields)
-	if err != nil {
-		return err
-	}
+	rec, routeErr := routeAndBuild(ctx, r, canonURL, rawURL, fields)
 	if err := sink.Write(rec); err != nil {
 		return fmt.Errorf("write record: %w", err)
+	}
+	if routeErr != nil {
+		return routeErr
 	}
 	if rec.Error != "" {
 		return errors.New(rec.Error)
@@ -134,51 +147,48 @@ func parseFieldSpecs(specs []string) ([]extract.Field, error) {
 	return fields, nil
 }
 
-// fetchAndBuild runs one URL through the HTTP engine, validity check, and
-// extractor, returning an output.Record ready to be written.
-func fetchAndBuild(ctx context.Context, e engine.Engine, canonURL, origURL string, fields []extract.Field) (output.Record, error) {
-	fetched, err := e.Fetch(ctx, engine.Request{URL: canonURL})
-	if err != nil {
-		return output.Record{
-			URL:          origURL,
-			CanonicalURL: canonURL,
-			FetchedAt:    time.Now().UTC(),
-			Tier:         e.Name(),
-			Error:        err.Error(),
-		}, err
-	}
+// routeAndBuild runs one URL through the tiered router and builds the
+// output.Record. It returns a non-nil error only when every tier failed or
+// the failure is non-escalatable (e.g. 404, unsupported content-type); in
+// those cases the record is still populated with whatever evidence the last
+// attempt captured, so callers can persist it.
+func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL string, fields []extract.Field) (output.Record, error) {
+	outcome, routeErr := r.Route(ctx, engine.Request{URL: canonURL})
 
-	checker := validity.NewChecker(validity.Default())
-	vr := checker.Check(validity.Page{
-		URL:         canonURL,
-		StatusCode:  fetched.StatusCode,
-		ContentType: fetched.ContentType,
-		Body:        fetched.Body,
-	})
+	// Pick the best result available for the record (success > last attempt).
+	best := outcome.Result
+	if best == nil {
+		best = outcome.LastResult
+	}
 
 	rec := output.Record{
 		URL:          origURL,
 		CanonicalURL: canonURL,
 		FetchedAt:    time.Now().UTC(),
-		Tier:         e.Name(),
-		StatusCode:   fetched.StatusCode,
-		DurationMS:   fetched.Duration.Milliseconds(),
-		ContentHash:  hashBody(fetched.Body),
-		Metadata: output.Metadata{
-			ContentType: fetched.ContentType,
-			BodyBytes:   len(fetched.Body),
-			FinalURL:    fetched.FinalURL,
-			Redirects:   fetched.Redirects,
-		},
+		Tier:         outcome.Tier,
+	}
+	if best != nil {
+		rec.StatusCode = best.StatusCode
+		rec.DurationMS = best.Duration.Milliseconds()
+		rec.ContentHash = hashBody(best.Body)
+		rec.Metadata = output.Metadata{
+			ContentType: best.ContentType,
+			BodyBytes:   len(best.Body),
+			FinalURL:    best.FinalURL,
+			Redirects:   best.Redirects,
+		}
 	}
 
-	if !vr.Valid {
-		rec.Error = vr.Reason
-		return rec, nil
+	if routeErr != nil {
+		if rec.Tier == "" && len(outcome.Attempts) > 0 {
+			rec.Tier = outcome.Attempts[len(outcome.Attempts)-1].Tier
+		}
+		rec.Error = routeErr.Error()
+		return rec, routeErr
 	}
 
-	if len(fields) > 0 {
-		ex, err := extract.CSS(fetched.Body, fields)
+	if len(fields) > 0 && best != nil {
+		ex, err := extract.CSS(best.Body, fields)
 		if err != nil {
 			rec.Error = "extract: " + err.Error()
 			return rec, nil

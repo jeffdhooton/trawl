@@ -13,6 +13,7 @@ import (
 	"github.com/jeffdhooton/trawl/internal/frontier"
 	"github.com/jeffdhooton/trawl/internal/output"
 	"github.com/jeffdhooton/trawl/internal/politeness"
+	"github.com/jeffdhooton/trawl/internal/router"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
 )
@@ -47,8 +48,12 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 
 	httpCfg := engine.DefaultHTTPConfig()
 	httpCfg.Timeout = cfg.timeoutDuration()
-	httpEngine := engine.NewHTTP(httpCfg)
-	defer httpEngine.Close()
+
+	r, err := buildRouter(cfg.tierList(), cfg.ForceTier, httpCfg)
+	if err != nil {
+		return fmt.Errorf("build router: %w", err)
+	}
+	defer r.Close()
 
 	gateCfg := politeness.Default()
 	gateCfg.UserAgent = httpCfg.UserAgent
@@ -78,7 +83,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runWorker(ctx, id, f, gate, httpEngine, fields, sink, stats)
+			runWorker(ctx, id, f, gate, r, fields, sink, stats)
 		}(i)
 	}
 	wg.Wait()
@@ -92,7 +97,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		Int("failed", s.Failed).
 		Int("queued", s.Queued).
 		Int("in_flight", s.InFlight).
-		Dur("elapsed", time.Since(stats.start)).
+		Str("elapsed", time.Since(stats.start).Round(time.Millisecond).String()).
 		Msg("job complete")
 
 	if ctxErr := ctx.Err(); ctxErr != nil && s.Queued > 0 {
@@ -110,7 +115,7 @@ func runWorker(
 	id int,
 	f *frontier.Frontier,
 	gate *politeness.Gate,
-	httpEngine engine.Engine,
+	r *router.Router,
 	fields []extract.Field,
 	sink output.Sink,
 	_ *workerStats,
@@ -122,9 +127,9 @@ func runWorker(
 
 		rec, err := f.Next()
 		if errors.Is(err, frontier.ErrEmpty) {
-			// In P0, batch mode enqueues everything up-front, so an empty
-			// frontier means we're done. (In P1 with crawl, workers would
-			// need to block until new URLs arrive.)
+			// In P1 stage 1, batch mode enqueues everything up-front, so an
+			// empty frontier means we're done. (Crawl mode in a later stage
+			// will need workers to block until new URLs arrive.)
 			return
 		}
 		if err != nil {
@@ -132,7 +137,7 @@ func runWorker(
 			return
 		}
 
-		processOne(ctx, rec.URL, f, gate, httpEngine, fields, sink)
+		processOne(ctx, rec.URL, f, gate, r, fields, sink)
 	}
 }
 
@@ -141,23 +146,24 @@ func processOne(
 	canonURL string,
 	f *frontier.Frontier,
 	gate *politeness.Gate,
-	httpEngine engine.Engine,
+	r *router.Router,
 	fields []extract.Field,
 	sink output.Sink,
 ) {
 	l := log.With().Str("url", canonURL).Logger()
+	firstTier := r.Tiers()[0]
 
 	allowed, err := gate.Allowed(ctx, canonURL)
 	if err != nil {
 		l.Warn().Err(err).Msg("robots check failed, allowing")
 	}
 	if !allowed {
-		_ = f.MarkFailed(canonURL, httpEngine.Name(), errors.New("blocked by robots.txt"))
+		_ = f.MarkFailed(canonURL, firstTier, errors.New("blocked by robots.txt"))
 		_ = sink.Write(output.Record{
 			URL:          canonURL,
 			CanonicalURL: canonURL,
 			FetchedAt:    time.Now().UTC(),
-			Tier:         httpEngine.Name(),
+			Tier:         firstTier,
 			Error:        "blocked by robots.txt",
 		})
 		return
@@ -168,25 +174,37 @@ func processOne(
 		// Only mark failed if it's not a context cancellation — we want the
 		// URL back in the queue for resume, not written off as failed.
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			_ = f.MarkFailed(canonURL, httpEngine.Name(), err)
+			_ = f.MarkFailed(canonURL, firstTier, err)
 		}
 		return
 	}
 	defer release()
 
-	record, fetchErr := fetchAndBuild(ctx, httpEngine, canonURL, canonURL, fields)
+	record, routeErr := routeAndBuild(ctx, r, canonURL, canonURL, fields)
+
+	// If the caller's context was cancelled, every tier likely failed with a
+	// deadline error — not a real failure. Leave the URL in-flight so Recover
+	// on restart puts it back into the queue.
+	if ctx.Err() != nil {
+		return
+	}
+
 	if err := sink.Write(record); err != nil {
 		l.Error().Err(err).Msg("write record")
 	}
 
-	if fetchErr != nil || record.Error != "" {
+	tier := record.Tier
+	if tier == "" {
+		tier = firstTier
+	}
+	if routeErr != nil || record.Error != "" {
 		msg := record.Error
-		if fetchErr != nil {
-			msg = fetchErr.Error()
+		if routeErr != nil {
+			msg = routeErr.Error()
 		}
-		_ = f.MarkFailed(canonURL, httpEngine.Name(), errors.New(msg))
-		l.Debug().Str("err", msg).Msg("fetch failed")
+		_ = f.MarkFailed(canonURL, tier, errors.New(msg))
+		l.Debug().Str("tier", tier).Str("err", msg).Msg("fetch failed")
 		return
 	}
-	_ = f.MarkDone(canonURL, httpEngine.Name())
+	_ = f.MarkDone(canonURL, tier)
 }
