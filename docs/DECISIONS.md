@@ -156,3 +156,15 @@ nav, client-side routing, non-matching terms like `/upgrade`).
 None of these open the Lightpanda question. This decision is closed
 pending a meaningfully different reachable sample (n ≥ 500 with a rate
 above 15%).
+
+**Caveat the next session must know:** both measurements were taken on
+the discoverable subset of pricing pages (~35% of input). The 65% that
+missed are exactly the pages hidden behind interactive widgets,
+`<button>`-only navigation, and JS-rendered pricing tables — which are
+also the pages most likely to need a JS engine to render. The sample
+is biased toward the easy half. **If discovery improves to >70% reach
+AND re-measurement on the expanded population shows the escalation
+rate climbing past 15%, the rule auto-reopens.** This isn't a flaw in
+the decision (the rule was followed correctly given the data
+available); it's a footnote that the "skip" verdict is conditional on
+the measurable population at the time of measurement.
