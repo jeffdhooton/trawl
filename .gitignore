@@ -1,0 +1,20 @@
+# Binaries
+/trawl
+/cmd/trawl/trawl
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+coverage.out
+coverage.html
+
+# Trawl runtime state
+/.trawl/
+*.jsonl
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
