@@ -27,6 +27,8 @@ type batchOpts struct {
 	urlColumn        string
 	fallbackColumn   string
 	fallbackSelector string
+	noTierLearning   bool
+	tierCachePath    string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -72,6 +74,10 @@ gracefully and prints a resume command.`,
 		`CSS selector for an <a> to follow from the fallback URL (e.g. 'a[href*="pricing"]').`+
 			` Only applied when the primary fetch failed with a trigger category AND the seed`+
 			` row had a fallback URL. Requires --fallback-column.`)
+	cmd.Flags().BoolVar(&opts.noTierLearning, "no-tier-learning", false,
+		"disable the cross-job host→tier cache (each URL starts at the cheapest tier)")
+	cmd.Flags().StringVar(&opts.tierCachePath, "tier-cache-path", "",
+		"override the default tier-cache directory ($TRAWL_HOME/tier-cache)")
 
 	return cmd
 }
@@ -116,6 +122,8 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		URLColumn:        opts.urlColumn,
 		FallbackColumn:   opts.fallbackColumn,
 		FallbackSelector: opts.fallbackSelector,
+		NoTierLearning:   opts.noTierLearning,
+		TierCachePath:    opts.tierCachePath,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

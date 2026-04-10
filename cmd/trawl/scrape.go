@@ -23,12 +23,14 @@ import (
 )
 
 type scrapeOpts struct {
-	selectors    []string
-	outputPath   string
-	ignoreRobots bool
-	timeout      time.Duration
-	tiers        string
-	forceTier    string
+	selectors      []string
+	outputPath     string
+	ignoreRobots   bool
+	timeout        time.Duration
+	tiers          string
+	forceTier      string
+	noTierLearning bool
+	tierCachePath  string
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -64,6 +66,10 @@ Use --selector name=css multiple times to extract structured fields:
 		"comma-separated engine tiers to try in order (http, chromium)")
 	cmd.Flags().StringVar(&opts.forceTier, "force-tier", "",
 		"pin a single tier for this run (overrides --tiers)")
+	cmd.Flags().BoolVar(&opts.noTierLearning, "no-tier-learning", false,
+		"disable the cross-job host→tier cache")
+	cmd.Flags().StringVar(&opts.tierCachePath, "tier-cache-path", "",
+		"override the default tier-cache directory ($TRAWL_HOME/tier-cache)")
 
 	return cmd
 }
@@ -99,6 +105,10 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		return err
 	}
 	defer r.Close()
+
+	tierCache, _, _ := openTierCache(opts.noTierLearning, opts.tierCachePath)
+	defer tierCache.Close()
+	r.WithCache(tierCache)
 
 	gateCfg := politeness.Default()
 	gateCfg.UserAgent = httpCfg.UserAgent

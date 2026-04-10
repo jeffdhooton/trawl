@@ -69,6 +69,16 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	}
 	defer r.Close()
 
+	// Attach the persistent tier-learning cache so repeat hosts skip the
+	// cheap-tier dead reckoning. Errors degrade to NopCache (no learning)
+	// rather than aborting the job — learning is best-effort infra.
+	tierCache, tierCachePath, _ := openTierCache(cfg.NoTierLearning, cfg.TierCachePath)
+	defer tierCache.Close()
+	r.WithCache(tierCache)
+	if tierCachePath != "" {
+		log.Info().Str("tier_cache", tierCachePath).Msg("tier learning enabled")
+	}
+
 
 	gateCfg := politeness.Default()
 	gateCfg.UserAgent = httpCfg.UserAgent

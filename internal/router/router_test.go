@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jeffdhooton/trawl/internal/engine"
+	"github.com/jeffdhooton/trawl/internal/tierlearn"
 	"github.com/jeffdhooton/trawl/internal/validity"
 )
 
@@ -144,3 +145,138 @@ func TestRouteFetchErrorFallsThrough(t *testing.T) {
 		t.Errorf("tier = %q", out.Tier)
 	}
 }
+
+// memCache is an in-memory tierlearn.Cache for router tests. We don't need
+// persistence here; just observe and lookup semantics matching BadgerCache.
+type memCache struct {
+	prefs map[string]string
+}
+
+func newMemCache() *memCache                   { return &memCache{prefs: map[string]string{}} }
+func (m *memCache) Preferred(host string) string { return m.prefs[host] }
+func (m *memCache) Observe(host, tier string)    { m.prefs[host] = tier }
+func (m *memCache) Close() error                 { return nil }
+
+// TestRoutePreferredTierSkipsHTTP verifies that a pre-seeded cache with
+// host→chromium causes Route to start at chromium and never call http.
+func TestRoutePreferredTierSkipsHTTP(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+	chromiumE := &fakeEngine{name: "chromium", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	cache := newMemCache()
+	cache.prefs["example.com"] = "chromium"
+
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithCache(cache)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Tier != "chromium" {
+		t.Errorf("tier = %q, want chromium", out.Tier)
+	}
+	if httpE.calls != 0 {
+		t.Errorf("http should not have been called (preferred=chromium), calls=%d", httpE.calls)
+	}
+	if chromiumE.calls != 1 {
+		t.Errorf("chromium calls = %d, want 1", chromiumE.calls)
+	}
+	if out.PreferredTier != "chromium" {
+		t.Errorf("PreferredTier = %q, want chromium", out.PreferredTier)
+	}
+}
+
+// TestRouteObserveRecordsSuccessfulTier verifies that a successful fetch
+// writes the tier to the cache so the NEXT fetch from the same host
+// starts there.
+func TestRouteObserveRecordsSuccessfulTier(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: spaShell(),
+	}}
+	chromiumE := &fakeEngine{name: "chromium", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	cache := newMemCache()
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithCache(cache)
+
+	// First fetch: http returns SPA shell, escalates to chromium which
+	// succeeds. Cache should learn host→chromium.
+	_, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.Preferred("example.com"); got != "chromium" {
+		t.Errorf("cache after first fetch = %q, want chromium", got)
+	}
+	if httpE.calls != 1 || chromiumE.calls != 1 {
+		t.Errorf("first fetch calls = http:%d chromium:%d, want 1/1", httpE.calls, chromiumE.calls)
+	}
+
+	// Second fetch from the same host should skip http entirely.
+	_, err = r.Route(context.Background(), engine.Request{URL: "https://example.com/page2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpE.calls != 1 {
+		t.Errorf("http calls after learn = %d, want still 1", httpE.calls)
+	}
+	if chromiumE.calls != 2 {
+		t.Errorf("chromium calls = %d, want 2", chromiumE.calls)
+	}
+}
+
+// TestRouteFailureDoesNotTeach verifies that a fetch where every tier
+// fails leaves the cache untouched.
+func TestRouteFailureDoesNotTeach(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: spaShell(),
+	}}
+	chromiumE := &fakeEngine{name: "chromium", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: spaShell(),
+	}}
+
+	cache := newMemCache()
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithCache(cache)
+
+	_, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err == nil {
+		t.Fatal("expected all-tiers-exhausted error")
+	}
+	if got := cache.Preferred("example.com"); got != "" {
+		t.Errorf("cache should not have learned from a failed fetch, got %q", got)
+	}
+}
+
+// TestRouteStalePreferenceFallsThrough: cache says "lightpanda" but the
+// router has no such engine. Should silently fall back to the default
+// ladder and succeed.
+func TestRouteStalePreferenceFallsThrough(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	cache := newMemCache()
+	cache.prefs["example.com"] = "lightpanda" // not in the ladder
+
+	r, _ := New([]engine.Engine{httpE}, validity.NewChecker(validity.Default()))
+	r.WithCache(cache)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatalf("stale preference should not fail the route: %v", err)
+	}
+	if out.Tier != "http" {
+		t.Errorf("tier = %q, want http (default ladder)", out.Tier)
+	}
+}
+
+// Compile-time check that memCache satisfies the Cache interface.
+var _ tierlearn.Cache = (*memCache)(nil)

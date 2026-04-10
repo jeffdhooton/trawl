@@ -27,18 +27,41 @@ type JobConfig struct {
 	URLColumn        string `json:"url_column,omitempty"`
 	FallbackColumn   string `json:"fallback_column,omitempty"`
 	FallbackSelector string `json:"fallback_selector,omitempty"`
+	NoTierLearning   bool   `json:"no_tier_learning,omitempty"`
+	TierCachePath    string `json:"tier_cache_path,omitempty"`
 }
 
-// jobRoot returns ~/.trawl/jobs, honoring TRAWL_HOME if set.
-func jobRoot() (string, error) {
+// trawlRoot returns the top-level trawl state directory, honoring
+// TRAWL_HOME if set. Jobs live under <root>/jobs, the tier-learning
+// cache under <root>/tier-cache, etc.
+func trawlRoot() (string, error) {
 	if override := os.Getenv("TRAWL_HOME"); override != "" {
-		return filepath.Join(override, "jobs"), nil
+		return override, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("locate home: %w", err)
 	}
-	return filepath.Join(home, ".trawl", "jobs"), nil
+	return filepath.Join(home, ".trawl"), nil
+}
+
+// jobRoot returns <trawl-root>/jobs.
+func jobRoot() (string, error) {
+	root, err := trawlRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "jobs"), nil
+}
+
+// defaultTierCachePath returns <trawl-root>/tier-cache, the default
+// location for the cross-job tier-learning BadgerDB.
+func defaultTierCachePath() (string, error) {
+	root, err := trawlRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "tier-cache"), nil
 }
 
 func jobDirFor(id string) (string, error) {
