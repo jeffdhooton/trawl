@@ -193,7 +193,13 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 			rec.Error = "extract: " + err.Error()
 			return rec, nil
 		}
-		rec.Extracted = ex
+		rec.Metadata.Extraction = &output.ExtractionStats{
+			Fields: len(fields),
+			Hits:   len(ex),
+		}
+		if len(ex) > 0 {
+			rec.Extracted = ex
+		}
 	}
 	return rec, nil
 }

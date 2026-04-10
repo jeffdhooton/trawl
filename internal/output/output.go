@@ -24,10 +24,21 @@ type Record struct {
 
 // Metadata holds bookkeeping fields that don't belong in Extracted.
 type Metadata struct {
-	ContentType string   `json:"content_type,omitempty"`
-	BodyBytes   int      `json:"body_bytes,omitempty"`
-	FinalURL    string   `json:"final_url,omitempty"`
-	Redirects   []string `json:"redirects,omitempty"`
+	ContentType string           `json:"content_type,omitempty"`
+	BodyBytes   int              `json:"body_bytes,omitempty"`
+	FinalURL    string           `json:"final_url,omitempty"`
+	Redirects   []string         `json:"redirects,omitempty"`
+	Extraction  *ExtractionStats `json:"extraction,omitempty"`
+}
+
+// ExtractionStats makes "no selectors requested" distinguishable from
+// "selectors requested but all missed." Only populated when extraction ran.
+type ExtractionStats struct {
+	// Fields is the number of selectors the user asked for.
+	Fields int `json:"fields"`
+	// Hits is how many of those selectors matched at least one node.
+	// Fields > 0 && Hits == 0 means the selectors are almost certainly wrong.
+	Hits int `json:"hits"`
 }
 
 // Sink is the minimal writer interface for any output format.
