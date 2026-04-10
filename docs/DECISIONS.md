@@ -168,3 +168,108 @@ rate climbing past 15%, the rule auto-reopens.** This isn't a flaw in
 the decision (the rule was followed correctly given the data
 available); it's a footnote that the "skip" verdict is conditional on
 the measurable population at the time of measurement.
+
+### Addendum — 2026-04-10: third data point from n=1000 hybrid run
+
+After shipping hybrid discovery (commit `72a25b6` — `--fallback-column`
+plus trigger-gated retry on http_4xx / dns_failure), re-ran Phase 0
+against the first 1000 rows of `seed/companies.csv` with:
+
+```
+--url-column pricing_url
+--fallback-column homepage
+--fallback-selector 'a[href*="pricing"], a[href*="/plans"], a[href*="/price"]'
+--tiers http,chromium --concurrency 15 --rate 1 --timeout 30s
+```
+
+```
+Run C — hybrid discovery, n=999 (1 row had blank pricing_url)
+wall clock        4m35s
+
+total             999
+reachable         355   (35.5%)
+unreachable       644
+
+successes by tier:
+  http            305   avg 661ms
+  chromium         50   avg 3.06s   (4.6x slower than http)
+
+chromium_escalation_rate = 50 / 355 = 14.08%
+
+fallback:
+  attempted       579   ← rows whose primary failed with http_4xx or dns_failure
+  succeeded        24   ← fallback path recovered them
+  no_link         464   ← homepage fetched OK, selector matched nothing
+  unreachable      91   ← homepage fetch itself failed
+
+failures by category (after hybrid recovery applied):
+  http_4xx        511   (down from ~535 pre-hybrid)
+  dns_failure      44
+  timeout          24
+  tls_error        24
+  robots_blocked   15
+  all_tiers_exhausted 9
+  http_5xx          6
+  connection_refused 5
+  spa_shell         4
+  parked_domain     2
+```
+
+**Rule evaluation — does this reopen Lightpanda?** No, but it's the
+closest call yet:
+
+- Rate: 14.08% vs 15% threshold → **miss by 0.9 points**
+- Sample: n=355 reachable vs n≥500 threshold → **miss by 145 rows**
+
+Both thresholds fail. The rule stays formally closed.
+
+**But the trend is the signal.** Across three data points, the
+escalation rate has moved exactly as the caveat in the previous
+addendum predicted:
+
+```
+Run A (n=500, pricing_url only):     11.4%  on n=158 reachable
+Run B (n=500, homepage+follow):       4.4%  on n=91 reachable
+Run C (n=999, hybrid):               14.08% on n=355 reachable
+```
+
+As the measurable population expanded, the escalation rate climbed
+toward the threshold. Run B looks like an outlier because it was
+follow-only — which selected for the easy homepages without trying
+the direct pricing URLs — so the population was the JS-light subset.
+Run C's hybrid combines both paths and is the most representative
+measurement so far.
+
+**Scaling comparison — is hybrid actually helping?** Yes, modestly:
+
+- Run A scaled linearly to n=1000: ~316 reachable
+- Run C hybrid actual: 355 reachable
+- **Net: +39 rows, +12% reach improvement** attributable to hybrid
+
+But the fallback path's internal yield is poor: **24 successes out of
+579 attempts (4.1%)**. The dominant failure mode is `no_link` at 464
+— the homepage loaded fine, the 3-pattern selector just didn't match.
+This is exactly the "65% pricing-page discovery miss rate" from the
+earlier addendum, re-confirmed on a larger sample. The hybrid machinery
+is working; the selector library is the bottleneck it's waiting on.
+
+**Next steps (decided):**
+
+1. Build the richer pricing-link selector library (priority #3 in
+   CLAUDE.md). Target the 464 no_link rows with patterns like
+   `/subscribe`, `/upgrade`, `/buy`, footer selectors, and text-based
+   matches. Ordering matters — cheap href substring matches first,
+   expensive text-content matches second.
+2. Re-run Phase 0 with the new selector set against the same
+   `/tmp/seed-1000.csv` so Run D is apples-to-apples with Run C.
+3. If Run D pushes reach past n=500 AND chromium rate past 15%, the
+   Lightpanda rule **auto-reopens** on its own terms. If reach crosses
+   but rate doesn't, the skip decision is reinforced with real data.
+
+**Sitemap parsing (priority #2) is deferred to after Run D** because
+the hybrid pipeline we already built is sitting idle on 464 homepages
+waiting for better selectors. Highest marginal value is unlocking
+that existing infrastructure, not building new discovery paths.
+
+**Authored during session:** 2026-04-10.
+**Commit reference for data:** `72a25b6` + `~/.trawl/jobs/phase0-1000-hybrid/`.
