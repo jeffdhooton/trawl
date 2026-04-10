@@ -56,23 +56,34 @@ discovery is the real problem. Rationale: prefer structural fixes
 (change what the system can find at all) over incremental ones
 (make the existing approach 20% better).
 
-1. **Hybrid discovery** — try `pricing_url` from the seed CSV first,
-   fall back to homepage + `--follow-link` on 4xx. Cheapest possible
-   win. Probably 30 min of work. Reclaims a chunk of the 65% miss
-   rate because the seed's `pricing_url` guess is right ~70% of the
-   time when the URL is still live.
-2. **Sitemap parsing** — highest-yield discovery path on the open
-   web. `robots.txt` usually lists sitemaps, and pricing pages are
-   almost always in them. Much more reliable than selector
-   heuristics.
-3. **Richer pricing-link selector library** — 10+ patterns including
-   `/subscribe`, `/upgrade`, `/buy`, `:contains("Pricing")`, footer-
-   specific selectors. Incremental, do after #1 and #2 stop paying.
-4. **YAML extract config with nested selectors** — task 18 in the
-   task list. Needed for structured pricing plan extraction. Still
-   blocked by "no one needing it yet."
-5. **Full BFS crawl mode** — task 19 original scope. Deferred
-   until something concretely needs depth-N traversal.
+**Scope reminder before adding anything here:** trawl is a
+general-purpose tiered scraping tool. The 7000-company seed CSV is a
+**test dataset** for measuring engine efficacy, not product data.
+Domain-specific logic (pricing-aware selectors, SaaS-shaped heuristics,
+anything that treats the seed as real input) belongs in whatever
+caller/harness runs Phase 0 — not inside trawl. If a proposed priority
+couldn't be justified to a non-SaaS user scraping something else, it
+doesn't belong in this list.
+
+1. **Hybrid discovery** — shipped 2026-04-10 (commit `72a25b6`).
+   `--fallback-column` + `--fallback-selector` + trigger-gated retry
+   on http_4xx / dns_failure. Run C data in DECISIONS.md.
+2. **Sitemap parsing** — highest-yield general discovery primitive.
+   `robots.txt` Sitemap: directives + well-known paths + sitemap-index
+   recursion + gzip. In-scope because any scraping job benefits,
+   not just pricing discovery. Probable shape: library package plus
+   a `trawl sitemap <url>` subcommand that prints URLs to stdout
+   (composable with `trawl batch -`).
+3. ~~Richer pricing-link selector library~~ — **not a trawl concern.**
+   Trawl already accepts arbitrary CSS via `--fallback-selector`; the
+   caller passes whatever patterns it wants. If there's a pricing-
+   specific selector library to build, it lives in the benchmark
+   harness, not in this repo. The Run C data showed fallback yield
+   was bottlenecked on selector quality, but that's a caller problem.
+4. **YAML extract config with nested selectors** — general-purpose
+   extraction config. Still blocked by "no consumer needs it yet."
+5. **Full BFS crawl mode** — general-purpose depth-N traversal.
+   Deferred until something concretely needs it.
 
 **Note on Lightpanda:** do NOT build it without re-running Phase 0
 and producing a chromium escalation rate ≥15% on a reachable sample
@@ -105,6 +116,7 @@ internal/frontier/      BadgerDB-backed URL queue
 internal/output/        JSONL sink + Record type
 internal/politeness/    robots.txt cache + per-domain rate/concurrency
 internal/router/        tiered escalation loop
+internal/sitemap/       sitemap.xml discovery + index recursion + gzip
 internal/stats/         per-job stats.json aggregator
 internal/validity/      heuristics for "did this page actually load"
 internal/version/       ldflags-settable version info

@@ -47,6 +47,7 @@ HTTP → Lightpanda → Chromium. Persistent frontier, polite by default, resuma
 	cmd.AddCommand(newScrapeCmd())
 	cmd.AddCommand(newBatchCmd())
 	cmd.AddCommand(newResumeCmd())
+	cmd.AddCommand(newSitemapCmd())
 
 	return cmd
 }
