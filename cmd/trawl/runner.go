@@ -171,11 +171,13 @@ func processOne(
 
 	release, err := gate.Acquire(ctx, canonURL)
 	if err != nil {
-		// Only mark failed if it's not a context cancellation — we want the
-		// URL back in the queue for resume, not written off as failed.
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			_ = f.MarkFailed(canonURL, firstTier, err)
-		}
+		// All Acquire errors are transient from the URL's perspective:
+		// ctx cancellation, rate limiter predictive refusal ("wait would
+		// exceed context deadline"), etc. The URL stays in_flight and
+		// Recover on restart will requeue it. The only "real" failure
+		// modes of Acquire (URL parse) can't happen here because the URL
+		// was already canonicalized before being enqueued.
+		l.Debug().Err(err).Msg("acquire transient failure, leaving in-flight for resume")
 		return
 	}
 	defer release()

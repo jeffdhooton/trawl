@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +24,7 @@ type batchOpts struct {
 	jobID        string
 	tiers        string
 	forceTier    string
+	urlColumn    string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -62,6 +61,8 @@ gracefully and prints a resume command.`,
 		"comma-separated engine tiers to try in order (http, chromium)")
 	cmd.Flags().StringVar(&opts.forceTier, "force-tier", "",
 		"pin a single tier for this run (overrides --tiers)")
+	cmd.Flags().StringVar(&opts.urlColumn, "url-column", "",
+		`for CSV/TSV input: column name or index holding the URL (default: "url" or first column)`)
 
 	return cmd
 }
@@ -98,6 +99,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		Timeout:      opts.timeout.String(),
 		Tiers:        opts.tiers,
 		ForceTier:    opts.forceTier,
+		URLColumn:    opts.urlColumn,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err
@@ -109,7 +111,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		Str("output", cfg.OutputPath).
 		Msg("starting batch job")
 
-	if err := enqueueFromFile(dir, urlFile); err != nil {
+	if err := enqueueFromFile(dir, urlFile, opts.urlColumn); err != nil {
 		return err
 	}
 
@@ -136,33 +138,23 @@ func resolveOutputPath(path, _ string) string {
 	return abs
 }
 
-func enqueueFromFile(jobDir, urlFile string) error {
+func enqueueFromFile(jobDir, urlFile, urlColumn string) error {
+	urls, err := readURLList(urlFile, urlColumn)
+	if err != nil {
+		return err
+	}
+
 	f, err := frontier.Open(filepath.Join(jobDir, "frontier"))
 	if err != nil {
 		return fmt.Errorf("open frontier: %w", err)
 	}
 	defer f.Close()
 
-	file, err := os.Open(urlFile)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", urlFile, err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20) // allow 1 MiB lines
-
 	added, dupes, skipped := 0, 0, 0
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := strings.TrimSpace(scanner.Text())
-		if raw == "" || strings.HasPrefix(raw, "#") {
-			continue
-		}
+	for i, raw := range urls {
 		_, wasAdded, err := f.Enqueue(raw)
 		if err != nil {
-			log.Warn().Int("line", line).Str("url", raw).Err(err).Msg("skipping invalid url")
+			log.Warn().Int("row", i+1).Str("url", raw).Err(err).Msg("skipping invalid url")
 			skipped++
 			continue
 		}
@@ -171,9 +163,6 @@ func enqueueFromFile(jobDir, urlFile string) error {
 		} else {
 			dupes++
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read %s: %w", urlFile, err)
 	}
 	log.Info().
 		Int("added", added).

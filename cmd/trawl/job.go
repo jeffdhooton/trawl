@@ -24,6 +24,7 @@ type JobConfig struct {
 	Timeout      string    `json:"timeout"` // time.Duration as string for readable JSON
 	Tiers        string    `json:"tiers"`   // comma-separated engine tier list
 	ForceTier    string    `json:"force_tier,omitempty"`
+	URLColumn    string    `json:"url_column,omitempty"`
 }
 
 // jobRoot returns ~/.trawl/jobs, honoring TRAWL_HOME if set.
