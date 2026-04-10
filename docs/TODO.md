@@ -5,6 +5,19 @@ one rises in priority.
 
 ---
 
+## Standing commitments (not papercuts — falsifiable plans)
+
+- **Lightpanda decision is deferred until Phase 0 benchmark data exists.**
+  See `docs/BENCHMARK.md` §"Decision rule: does Lightpanda ship at all?" for
+  the thresholds and the non-negotiable "same-day" Phase 0 trigger. The
+  original P1 stage 2 plan (build Lightpanda now) is on hold pending data —
+  **not abandoned**. If you're reading this and Phase 0 has run, go read the
+  stats.json and execute the decision rule, don't punt it forward.
+
+---
+
+## Open papercuts
+
 _No open items._
 
 Fixed:
