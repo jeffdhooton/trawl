@@ -43,6 +43,12 @@ type Record struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 	// Seq is the FIFO position. Only meaningful while State == StateQueued.
 	Seq uint64 `json:"seq"`
+	// Fallback is an optional sidecar URL used by hybrid discovery: if the
+	// primary URL returns an unreachable category (http_4xx, dns_failure)
+	// the worker can re-route through Fallback + --fallback-selector to
+	// recover the pricing page from a live homepage. Stored verbatim from
+	// the seed row — not canonicalized, not deduped.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // Stats is a lightweight snapshot of frontier counts.
@@ -103,6 +109,15 @@ func (f *Frontier) Close() error {
 // It canonicalizes the URL first and returns (canonicalURL, added, error).
 // A URL that already exists in any state returns added=false.
 func (f *Frontier) Enqueue(rawURL string) (canonURL string, added bool, err error) {
+	return f.EnqueueWithFallback(rawURL, "")
+}
+
+// EnqueueWithFallback adds a URL to the frontier with an optional fallback
+// URL stored as sidecar metadata. The fallback is NOT canonicalized or
+// deduplicated — it's a per-row hint that the worker uses to retry on
+// specific unreachable categories. Dedup is still driven by the canonical
+// form of rawURL.
+func (f *Frontier) EnqueueWithFallback(rawURL, fallback string) (canonURL string, added bool, err error) {
 	canonURL, err = canonical.Canonicalize(rawURL, canonical.Options{})
 	if err != nil {
 		return "", false, fmt.Errorf("canonicalize: %w", err)
@@ -128,6 +143,7 @@ func (f *Frontier) Enqueue(rawURL string) (canonURL string, added bool, err erro
 			EnqueuedAt: time.Now().UTC(),
 			UpdatedAt:  time.Now().UTC(),
 			Seq:        seq,
+			Fallback:   fallback,
 		}
 		if err := putJSON(txn, urlKey, rec); err != nil {
 			return err

@@ -22,10 +22,11 @@ type JobConfig struct {
 	RatePerSec   float64   `json:"rate_per_sec"`
 	BurstPerSec  int       `json:"burst_per_sec"`
 	Timeout      string    `json:"timeout"` // time.Duration as string for readable JSON
-	Tiers        string    `json:"tiers"`   // comma-separated engine tier list
-	ForceTier    string    `json:"force_tier,omitempty"`
-	URLColumn    string    `json:"url_column,omitempty"`
-	FollowLink   string    `json:"follow_link,omitempty"`
+	Tiers            string `json:"tiers"` // comma-separated engine tier list
+	ForceTier        string `json:"force_tier,omitempty"`
+	URLColumn        string `json:"url_column,omitempty"`
+	FallbackColumn   string `json:"fallback_column,omitempty"`
+	FallbackSelector string `json:"fallback_selector,omitempty"`
 }
 
 // jobRoot returns ~/.trawl/jobs, honoring TRAWL_HOME if set.

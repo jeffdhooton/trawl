@@ -15,17 +15,18 @@ import (
 )
 
 type batchOpts struct {
-	selectors    []string
-	outputPath   string
-	ignoreRobots bool
-	timeout      time.Duration
-	concurrency  int
-	ratePerSec   float64
-	jobID        string
-	tiers        string
-	forceTier    string
-	urlColumn    string
-	followLink   string
+	selectors        []string
+	outputPath       string
+	ignoreRobots     bool
+	timeout          time.Duration
+	concurrency      int
+	ratePerSec       float64
+	jobID            string
+	tiers            string
+	forceTier        string
+	urlColumn        string
+	fallbackColumn   string
+	fallbackSelector string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -63,11 +64,14 @@ gracefully and prints a resume command.`,
 	cmd.Flags().StringVar(&opts.forceTier, "force-tier", "",
 		"pin a single tier for this run (overrides --tiers)")
 	cmd.Flags().StringVar(&opts.urlColumn, "url-column", "",
-		`for CSV/TSV input: column name or index holding the URL (default: "url" or first column)`)
-	cmd.Flags().StringVar(&opts.followLink, "follow-link", "",
-		`CSS selector for an <a> to follow before extracting (e.g. 'a[href*="pricing"]').`+
-			` Fetches the input URL, finds the first matching link (same-domain), and runs the`+
-			` normal tier-routed fetch+extract on the resolved link instead of the original URL.`)
+		`for CSV/TSV input: column name holding the primary URL (default: "url" or first column)`)
+	cmd.Flags().StringVar(&opts.fallbackColumn, "fallback-column", "",
+		`for CSV/TSV input: column name holding a fallback URL to try when the primary`+
+			` returns http_4xx or dns_failure. Requires --fallback-selector.`)
+	cmd.Flags().StringVar(&opts.fallbackSelector, "fallback-selector", "",
+		`CSS selector for an <a> to follow from the fallback URL (e.g. 'a[href*="pricing"]').`+
+			` Only applied when the primary fetch failed with a trigger category AND the seed`+
+			` row had a fallback URL. Requires --fallback-column.`)
 
 	return cmd
 }
@@ -79,6 +83,11 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 	// Validate selectors early.
 	if _, err := parseFieldSpecs(opts.selectors); err != nil {
 		return err
+	}
+
+	// Hybrid discovery flags are only meaningful together.
+	if (opts.fallbackColumn == "") != (opts.fallbackSelector == "") {
+		return fmt.Errorf("--fallback-column and --fallback-selector must be used together")
 	}
 
 	id := opts.jobID
@@ -94,18 +103,19 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 	}
 
 	cfg := &JobConfig{
-		ID:           id,
-		CreatedAt:    time.Now().UTC(),
-		Selectors:    opts.selectors,
-		OutputPath:   resolveOutputPath(opts.outputPath, dir),
-		Concurrency:  opts.concurrency,
-		IgnoreRobots: opts.ignoreRobots,
-		RatePerSec:   opts.ratePerSec,
-		Timeout:      opts.timeout.String(),
-		Tiers:        opts.tiers,
-		ForceTier:    opts.forceTier,
-		URLColumn:    opts.urlColumn,
-		FollowLink:   opts.followLink,
+		ID:               id,
+		CreatedAt:        time.Now().UTC(),
+		Selectors:        opts.selectors,
+		OutputPath:       resolveOutputPath(opts.outputPath, dir),
+		Concurrency:      opts.concurrency,
+		IgnoreRobots:     opts.ignoreRobots,
+		RatePerSec:       opts.ratePerSec,
+		Timeout:          opts.timeout.String(),
+		Tiers:            opts.tiers,
+		ForceTier:        opts.forceTier,
+		URLColumn:        opts.urlColumn,
+		FallbackColumn:   opts.fallbackColumn,
+		FallbackSelector: opts.fallbackSelector,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err
@@ -117,7 +127,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		Str("output", cfg.OutputPath).
 		Msg("starting batch job")
 
-	if err := enqueueFromFile(dir, urlFile, opts.urlColumn); err != nil {
+	if err := enqueueFromFile(dir, urlFile, opts.urlColumn, opts.fallbackColumn); err != nil {
 		return err
 	}
 
@@ -144,8 +154,8 @@ func resolveOutputPath(path, _ string) string {
 	return abs
 }
 
-func enqueueFromFile(jobDir, urlFile, urlColumn string) error {
-	urls, err := readURLList(urlFile, urlColumn)
+func enqueueFromFile(jobDir, urlFile, urlColumn, fallbackColumn string) error {
+	rows, err := readURLList(urlFile, urlColumn, fallbackColumn)
 	if err != nil {
 		return err
 	}
@@ -156,16 +166,19 @@ func enqueueFromFile(jobDir, urlFile, urlColumn string) error {
 	}
 	defer f.Close()
 
-	added, dupes, skipped := 0, 0, 0
-	for i, raw := range urls {
-		_, wasAdded, err := f.Enqueue(raw)
+	added, dupes, skipped, withFallback := 0, 0, 0, 0
+	for i, row := range rows {
+		_, wasAdded, err := f.EnqueueWithFallback(row.URL, row.Fallback)
 		if err != nil {
-			log.Warn().Int("row", i+1).Str("url", raw).Err(err).Msg("skipping invalid url")
+			log.Warn().Int("row", i+1).Str("url", row.URL).Err(err).Msg("skipping invalid url")
 			skipped++
 			continue
 		}
 		if wasAdded {
 			added++
+			if row.Fallback != "" {
+				withFallback++
+			}
 		} else {
 			dupes++
 		}
@@ -174,6 +187,7 @@ func enqueueFromFile(jobDir, urlFile, urlColumn string) error {
 		Int("added", added).
 		Int("duplicates", dupes).
 		Int("skipped", skipped).
+		Int("with_fallback", withFallback).
 		Msg("enqueued urls")
 	return nil
 }

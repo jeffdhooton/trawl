@@ -54,6 +54,29 @@ func TestEnqueueDedup(t *testing.T) {
 	}
 }
 
+func TestEnqueueWithFallbackRoundTrips(t *testing.T) {
+	f := newTestFrontier(t)
+
+	canon, added, err := f.EnqueueWithFallback("https://example.com/pricing", "https://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !added {
+		t.Fatal("first Enqueue should return added=true")
+	}
+
+	rec, err := f.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.URL != canon {
+		t.Errorf("URL = %q, want %q", rec.URL, canon)
+	}
+	if rec.Fallback != "https://example.com" {
+		t.Errorf("Fallback = %q, want %q", rec.Fallback, "https://example.com")
+	}
+}
+
 func TestNextFIFO(t *testing.T) {
 	f := newTestFrontier(t)
 

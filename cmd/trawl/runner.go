@@ -100,7 +100,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		go func(id int) {
 			defer wg.Done()
 			runWorker(ctx, id, f, gate, r, fields, sink, deadLetter, collector, wstats,
-				cfg.FollowLink)
+				cfg.FallbackSelector)
 		}(i)
 	}
 	wg.Wait()
@@ -199,7 +199,7 @@ func runWorker(
 	deadLetter output.Sink,
 	collector *stats.Collector,
 	_ *workerStats,
-	followSelector string,
+	fallbackSelector string,
 ) {
 	for {
 		if ctx.Err() != nil {
@@ -218,14 +218,23 @@ func runWorker(
 			return
 		}
 
-		processOne(ctx, rec.URL, f, gate, r, fields, sink, deadLetter, collector,
-			followSelector)
+		processOne(ctx, rec.URL, rec.Fallback, f, gate, r, fields, sink, deadLetter, collector,
+			fallbackSelector)
 	}
+}
+
+// shouldTryFallback is the hybrid-discovery trigger rule: the worker only
+// re-routes through the fallback URL when the primary failed with one of a
+// small set of categories. Kept narrow (http_4xx, dns_failure) to avoid
+// wasting budget on domains where the whole host is dead.
+func shouldTryFallback(cat failure.Category) bool {
+	return cat == failure.CatHTTP4xx || cat == failure.CatDNS
 }
 
 func processOne(
 	ctx context.Context,
 	canonURL string,
+	fallbackURL string,
 	f *frontier.Frontier,
 	gate *politeness.Gate,
 	r *router.Router,
@@ -233,7 +242,7 @@ func processOne(
 	sink output.Sink,
 	deadLetter output.Sink,
 	collector *stats.Collector,
-	followSelector string,
+	fallbackSelector string,
 ) {
 	l := log.With().Str("url", canonURL).Logger()
 	firstTier := r.Tiers()[0]
@@ -271,53 +280,71 @@ func processOne(
 	}
 	defer release()
 
-	// Follow-link pre-fetch: route the input URL through the full router
-	// (so SPA homepages can escalate to chromium for nav DOM), extract the
-	// first <a> matching the selector, and use THAT as the target for the
-	// real route-through-tiers fetch. The input URL becomes rec.URL; the
-	// resolved link becomes rec.CanonicalURL.
-	//
-	// Prefetch failures are classified by their UNDERLYING cause (DNS,
-	// TLS, 4xx, etc.) so stats.json shows the real failure mode, not a
-	// catch-all "follow_failed" bucket. Only "selector didn't match
-	// anything" actually uses CatFollowFailed.
-	targetURL := canonURL
-	if followSelector != "" {
-		resolved, prefetchTier, err := resolveFollowLink(ctx, r, canonURL, followSelector)
-		if err != nil {
-			cat := failure.CatFollowFailed
-			if !errors.Is(err, errNoMatchingLink) {
-				cat = failure.Classify(err, 0, err.Error())
-			}
-			tier := prefetchTier
-			if tier == "" {
-				tier = firstTier
-			}
-			rec := output.Record{
-				URL:             canonURL,
-				CanonicalURL:    canonURL,
-				FetchedAt:       time.Now().UTC(),
-				Tier:            tier,
-				Error:           "follow: " + err.Error(),
-				FailureCategory: string(cat),
-			}
-			_ = sink.Write(rec)
-			_ = deadLetter.Write(rec)
-			collector.Record(cat, tier, 0)
-			_ = f.MarkFailed(canonURL, tier, errors.New("follow: "+err.Error()))
-			return
-		}
-		targetURL = resolved
-		l.Debug().Str("resolved", resolved).Str("prefetch_tier", prefetchTier).Msg("follow-link resolved")
+	// First attempt: route the primary URL through the full tier ladder.
+	record, routeErr := routeAndBuild(ctx, r, canonURL, canonURL, fields)
+
+	if ctx.Err() != nil {
+		// Caller context cancelled — every tier likely failed with a deadline
+		// error, not a real failure. Leave the URL in-flight so Recover on
+		// restart puts it back into the queue.
+		return
 	}
 
-	record, routeErr := routeAndBuild(ctx, r, targetURL, canonURL, fields)
-
-	// If the caller's context was cancelled, every tier likely failed with a
-	// deadline error — not a real failure. Leave the URL in-flight so Recover
-	// on restart puts it back into the queue.
-	if ctx.Err() != nil {
-		return
+	// Hybrid discovery: if the primary failed with a trigger category AND the
+	// seed row carried a fallback URL AND the operator asked for fallback,
+	// try resolving the target through the fallback URL's homepage.
+	//
+	// The fallback path completely replaces the primary record — we don't
+	// emit two rows per seed. The output record's `url` field stays as the
+	// original primary (for jq joins back to the seed), `canonical_url` is
+	// the resolved link the fallback path produced, and metadata.discovery
+	// captures what happened. Stats.json increments fallback.{attempted,
+	// succeeded, no_link, unreachable}.
+	primaryCat := failure.Category(record.FailureCategory)
+	wantFallback := fallbackSelector != "" && fallbackURL != "" && shouldTryFallback(primaryCat)
+	if wantFallback {
+		fallbackRec, cat, ok := tryFallback(ctx, r, canonURL, fallbackURL, fallbackSelector, fields, collector)
+		if ctx.Err() != nil {
+			return
+		}
+		if ok {
+			// Successful hybrid discovery. Replace the primary record outright.
+			record = fallbackRec
+			routeErr = nil
+			primaryCat = cat
+			l.Debug().
+				Str("fallback_url", fallbackURL).
+				Str("resolved", record.CanonicalURL).
+				Str("tier", record.Tier).
+				Msg("hybrid fallback succeeded")
+		} else {
+			// Fallback attempt failed. Annotate the primary record with
+			// discovery metadata so downstream can see a fallback was tried,
+			// then persist the primary as-is. The primary's failure_category
+			// stays intact.
+			if record.Metadata.Discovery == nil {
+				record.Metadata.Discovery = &output.DiscoveryStats{
+					Path:        "primary",
+					PrimaryURL:  canonURL,
+					FallbackURL: fallbackURL,
+				}
+			}
+			l.Debug().
+				Str("fallback_url", fallbackURL).
+				Str("primary_category", string(primaryCat)).
+				Msg("hybrid fallback did not recover the row")
+		}
+	} else if fallbackSelector != "" && fallbackURL != "" {
+		// Fallback was configured for this row, primary succeeded (or failed
+		// in a non-trigger category) — tag discovery.path=primary so a later
+		// comparison run can count "fallback would not have been tried."
+		if record.Metadata.Discovery == nil {
+			record.Metadata.Discovery = &output.DiscoveryStats{
+				Path:        "primary",
+				PrimaryURL:  canonURL,
+				FallbackURL: fallbackURL,
+			}
+		}
 	}
 
 	if err := sink.Write(record); err != nil {
@@ -325,8 +352,7 @@ func processOne(
 	}
 	// Dead-letter queue mirrors any unreachable record so benchmark scripts
 	// can cheaply isolate "dead data" from "real tier decisions."
-	category := failure.Category(record.FailureCategory)
-	if !category.IsReachable() {
+	if !primaryCat.IsReachable() {
 		if err := deadLetter.Write(record); err != nil {
 			l.Error().Err(err).Msg("write dead letter")
 		}
@@ -336,7 +362,7 @@ func processOne(
 	if tier == "" {
 		tier = firstTier
 	}
-	collector.Record(category, tier, record.DurationMS)
+	collector.Record(primaryCat, tier, record.DurationMS)
 	if routeErr != nil || record.Error != "" {
 		msg := record.Error
 		if routeErr != nil {
@@ -347,4 +373,47 @@ func processOne(
 		return
 	}
 	_ = f.MarkDone(canonURL, tier)
+}
+
+// tryFallback runs the hybrid-discovery fallback path for a single row.
+// On success, it returns a fully-populated output.Record whose URL is the
+// original primary (for seed-join), whose CanonicalURL is the resolved link,
+// and whose metadata.Discovery captures the hybrid path.
+//
+// The returned ok is false when: the fallback prefetch failed, the selector
+// matched nothing, or the resolved-link fetch returned an unreachable
+// category. In all failure modes the collector's fallback counters are
+// updated before returning.
+func tryFallback(
+	ctx context.Context,
+	r *router.Router,
+	primaryURL, fallbackURL, selector string,
+	fields []extract.Field,
+	collector *stats.Collector,
+) (output.Record, failure.Category, bool) {
+	resolved, _, err := resolveFollowLink(ctx, r, fallbackURL, selector)
+	if err != nil {
+		if errors.Is(err, errNoMatchingLink) {
+			collector.RecordFallback("no_link")
+		} else {
+			collector.RecordFallback("unreachable")
+		}
+		return output.Record{}, "", false
+	}
+
+	rec, routeErr := routeAndBuild(ctx, r, resolved, primaryURL, fields)
+	cat := failure.Category(rec.FailureCategory)
+	if rec.Metadata.Discovery == nil {
+		rec.Metadata.Discovery = &output.DiscoveryStats{
+			Path:        "fallback",
+			PrimaryURL:  primaryURL,
+			FallbackURL: fallbackURL,
+		}
+	}
+	if routeErr != nil || !cat.IsReachable() {
+		collector.RecordFallback("unreachable")
+		return rec, cat, false
+	}
+	collector.RecordFallback("succeeded")
+	return rec, cat, true
 }

@@ -20,10 +20,19 @@ type Collector struct {
 	mu      sync.Mutex
 	startAt time.Time
 
-	total           int
-	byTier          map[string]int
-	byCategory      map[failure.Category]int
+	total            int
+	byTier           map[string]int
+	byCategory       map[failure.Category]int
 	durationMSByTier map[string]durStats
+
+	// Hybrid-discovery counters. Only incremented when the worker actually
+	// attempts a fallback (i.e. primary failed with a trigger category AND
+	// the seed row had a fallback URL). Used to measure whether the hybrid
+	// path is paying its cost.
+	fallbackAttempted   int
+	fallbackSucceeded   int
+	fallbackNoLink      int
+	fallbackUnreachable int
 }
 
 type durStats struct {
@@ -68,6 +77,29 @@ func (c *Collector) Record(category failure.Category, tier string, durationMS in
 			ds.Max = durationMS
 		}
 		c.durationMSByTier[tier] = ds
+	}
+}
+
+// RecordFallback records the outcome of a fallback attempt. Call once per
+// attempt, after the primary has been classified unreachable and the
+// hybrid path has decided to try the fallback URL.
+//
+// Outcomes:
+//   - "succeeded"    fallback resolved + fetched into a reachable record
+//   - "no_link"      prefetch succeeded but selector matched nothing
+//   - "unreachable"  fallback fetch itself failed (any category)
+func (c *Collector) RecordFallback(outcome string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.fallbackAttempted++
+	switch outcome {
+	case "succeeded":
+		c.fallbackSucceeded++
+	case "no_link":
+		c.fallbackNoLink++
+	case "unreachable":
+		c.fallbackUnreachable++
 	}
 }
 
@@ -151,6 +183,12 @@ func (c *Collector) Snapshot(jobID string) Snapshot {
 		FailuresByCategory:     cats,
 		TierLatency:            avgByTier,
 		ChromiumEscalationRate: chromiumRate,
+		Fallback: FallbackStats{
+			Attempted:   c.fallbackAttempted,
+			Succeeded:   c.fallbackSucceeded,
+			NoLink:      c.fallbackNoLink,
+			Unreachable: c.fallbackUnreachable,
+		},
 	}
 }
 
@@ -173,6 +211,9 @@ type Snapshot struct {
 	FailuresByCategory     map[string]int         `json:"failures_by_category"`
 	TierLatency            map[string]TierLatency `json:"tier_latency_ms"`
 	ChromiumEscalationRate float64                `json:"chromium_escalation_rate"`
+	// Fallback records how hybrid discovery performed. Zero values when
+	// no seed row had a fallback URL configured.
+	Fallback FallbackStats `json:"fallback"`
 }
 
 // TierLatency holds aggregate timings for a single engine tier.
@@ -181,6 +222,23 @@ type TierLatency struct {
 	AvgMS int64 `json:"avg_ms"`
 	MinMS int64 `json:"min_ms"`
 	MaxMS int64 `json:"max_ms"`
+}
+
+// FallbackStats summarizes the hybrid-discovery path in a run.
+//
+//   - Attempted:   rows whose primary failed with a trigger category AND
+//     carried a fallback URL from the seed
+//   - Succeeded:   rows where the fallback fetch produced a reachable record
+//   - NoLink:      fallback prefetch succeeded but --fallback-selector matched
+//     nothing
+//   - Unreachable: fallback fetch itself failed (any category)
+//
+// Attempted == Succeeded + NoLink + Unreachable.
+type FallbackStats struct {
+	Attempted   int `json:"attempted"`
+	Succeeded   int `json:"succeeded"`
+	NoLink      int `json:"no_link"`
+	Unreachable int `json:"unreachable"`
 }
 
 // WriteJSON serializes a snapshot to a file path.

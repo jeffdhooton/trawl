@@ -33,6 +33,21 @@ type Metadata struct {
 	FinalURL    string           `json:"final_url,omitempty"`
 	Redirects   []string         `json:"redirects,omitempty"`
 	Extraction  *ExtractionStats `json:"extraction,omitempty"`
+	Discovery   *DiscoveryStats  `json:"discovery,omitempty"`
+}
+
+// DiscoveryStats records how a record's target URL was discovered when
+// hybrid discovery (--fallback-column + --fallback-selector) is in play.
+// Only populated for rows whose seed had a fallback URL.
+//
+// Path is either "primary" (the seed's URL column worked on the first try)
+// or "fallback" (the seed's primary failed with a trigger category and the
+// fallback URL was resolved via --fallback-selector). PrimaryURL is always
+// the original seed URL; FallbackURL is present only on the fallback path.
+type DiscoveryStats struct {
+	Path        string `json:"path"`
+	PrimaryURL  string `json:"primary_url"`
+	FallbackURL string `json:"fallback_url,omitempty"`
 }
 
 // ExtractionStats makes "no selectors requested" distinguishable from
