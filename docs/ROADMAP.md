@@ -1,6 +1,6 @@
 # trawl — roadmap
 
-**Current phase:** content extraction (not yet started)
+**Current phase:** BFS crawl mode (next up)
 **Last updated:** 2026-04-10
 
 This doc is the single source of truth for "what's next and why." The
@@ -80,33 +80,30 @@ Phases are ordered by marginal value on already-built infrastructure,
 not by feature glamour. Each phase should feel like it unlocks a new
 use case, not like it sprinkles polish.
 
-### Phase: content extraction (CURRENT)
+### Phase: content extraction — SHIPPED 2026-04-10
 
-**Goal:** turn `trawl scrape <url>` into "give me clean content from
-a URL" — the 90% Firecrawl use case.
-
-**Bundle:**
+**What landed:**
 1. HTML → clean markdown via `github.com/JohannesKaufmann/html-to-markdown`
-   (pure-Go, CGO-free). New `--format markdown|html|text` flag; default
-   stays `html` so existing callers don't break.
-2. Automatic metadata extraction on every record: title, description,
-   canonical URL, language, Open Graph tags, published date where
-   parseable. Lives under `metadata.page` in the output record. No
-   configuration — it's always on and cheap.
-3. Boilerplate removal via `github.com/go-shiori/go-readability` (pure
-   Go, actively maintained). Opt-in via `--readability` flag. Strips
-   nav, footer, ads before markdown conversion or CSS extraction.
+   (pure-Go). New `--format html|markdown` flag on scrape/batch, default
+   empty (no body emitted) so existing JSONL consumers stay
+   backward-compatible.
+2. Automatic page metadata on every record via hand-rolled goquery
+   extractor: title, description, canonical URL, language, Open Graph,
+   Twitter cards, JSON-LD structured data, published_at with a chain
+   of timestamp formats. Lives at `metadata.page`. On by default;
+   `--no-metadata` escape hatch for the rare opt-out.
+3. Boilerplate removal via `codeberg.org/readeck/go-readability/v2`
+   (pure-Go, actively maintained fork of the deprecated go-shiori
+   original). `--readability` flag strips nav/footer/ads before CSS
+   extraction and markdown conversion. Falls back to raw body on
+   failure — never hard errors.
 
-**Why this bundle, not piecemeal:** each piece alone is marginally
-useful; together they unlock the new use case. They all operate on
-the HTML body the router already fetches — no new plumbing. The
-output record already has a `Metadata` struct with room for a `Page`
-sub-object. Testable end-to-end with httptest, no Chromium needed.
+Metadata extraction runs on the ORIGINAL body (pre-readability) so
+og:*, canonical, and JSON-LD in <head> survive even when readability
+strips everything else.
 
-**Exit criteria:** `trawl scrape https://linear.app/pricing --format
-markdown --readability` returns clean markdown with page metadata
-populated, comparable in quality to `curl https://api.firecrawl.dev/
-v1/scrape -d '{url: ..., formats: [markdown]}'`.
+Smoke-tested against linear.app — returns clean markdown with all
+metadata populated, including og:image, twitter cards, and lang attr.
 
 ### Phase: BFS crawl mode
 

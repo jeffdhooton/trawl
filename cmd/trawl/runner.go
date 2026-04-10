@@ -105,12 +105,18 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		concurrency = 20
 	}
 
+	copts := contentOpts{
+		format:      cfg.Format,
+		readability: cfg.Readability,
+		noMetadata:  cfg.NoMetadata,
+	}
+
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			runWorker(ctx, id, f, gate, r, fields, sink, deadLetter, collector, wstats,
-				cfg.FallbackSelector)
+				cfg.FallbackSelector, copts)
 		}(i)
 	}
 	wg.Wait()
@@ -210,6 +216,7 @@ func runWorker(
 	collector *stats.Collector,
 	_ *workerStats,
 	fallbackSelector string,
+	copts contentOpts,
 ) {
 	for {
 		if ctx.Err() != nil {
@@ -229,7 +236,7 @@ func runWorker(
 		}
 
 		processOne(ctx, rec.URL, rec.Fallback, f, gate, r, fields, sink, deadLetter, collector,
-			fallbackSelector)
+			fallbackSelector, copts)
 	}
 }
 
@@ -253,6 +260,7 @@ func processOne(
 	deadLetter output.Sink,
 	collector *stats.Collector,
 	fallbackSelector string,
+	copts contentOpts,
 ) {
 	l := log.With().Str("url", canonURL).Logger()
 	firstTier := r.Tiers()[0]
@@ -291,7 +299,7 @@ func processOne(
 	defer release()
 
 	// First attempt: route the primary URL through the full tier ladder.
-	record, routeErr := routeAndBuild(ctx, r, canonURL, canonURL, fields)
+	record, routeErr := routeAndBuild(ctx, r, canonURL, canonURL, fields, copts)
 
 	if ctx.Err() != nil {
 		// Caller context cancelled — every tier likely failed with a deadline
@@ -313,7 +321,7 @@ func processOne(
 	primaryCat := failure.Category(record.FailureCategory)
 	wantFallback := fallbackSelector != "" && fallbackURL != "" && shouldTryFallback(primaryCat)
 	if wantFallback {
-		fallbackRec, cat, ok := tryFallback(ctx, r, canonURL, fallbackURL, fallbackSelector, fields, collector)
+		fallbackRec, cat, ok := tryFallback(ctx, r, canonURL, fallbackURL, fallbackSelector, fields, collector, copts)
 		if ctx.Err() != nil {
 			return
 		}
@@ -400,6 +408,7 @@ func tryFallback(
 	primaryURL, fallbackURL, selector string,
 	fields []extract.Field,
 	collector *stats.Collector,
+	copts contentOpts,
 ) (output.Record, failure.Category, bool) {
 	resolved, _, err := resolveFollowLink(ctx, r, fallbackURL, selector)
 	if err != nil {
@@ -411,7 +420,7 @@ func tryFallback(
 		return output.Record{}, "", false
 	}
 
-	rec, routeErr := routeAndBuild(ctx, r, resolved, primaryURL, fields)
+	rec, routeErr := routeAndBuild(ctx, r, resolved, primaryURL, fields, copts)
 	cat := failure.Category(rec.FailureCategory)
 	if rec.Metadata.Discovery == nil {
 		rec.Metadata.Discovery = &output.DiscoveryStats{

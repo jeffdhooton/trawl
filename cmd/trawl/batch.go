@@ -29,6 +29,9 @@ type batchOpts struct {
 	fallbackSelector string
 	noTierLearning   bool
 	tierCachePath    string
+	format           string
+	readability      bool
+	noMetadata       bool
 }
 
 func newBatchCmd() *cobra.Command {
@@ -78,6 +81,12 @@ gracefully and prints a resume command.`,
 		"disable the cross-job host→tier cache (each URL starts at the cheapest tier)")
 	cmd.Flags().StringVar(&opts.tierCachePath, "tier-cache-path", "",
 		"override the default tier-cache directory ($TRAWL_HOME/tier-cache)")
+	cmd.Flags().StringVar(&opts.format, "format", "",
+		`body format in output records: "html" or "markdown". Empty omits the body field.`)
+	cmd.Flags().BoolVar(&opts.readability, "readability", false,
+		"strip nav/footer/ads boilerplate before CSS extraction and markdown conversion")
+	cmd.Flags().BoolVar(&opts.noMetadata, "no-metadata", false,
+		"skip automatic page metadata extraction (title, OG, canonical, JSON-LD)")
 
 	return cmd
 }
@@ -94,6 +103,10 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 	// Hybrid discovery flags are only meaningful together.
 	if (opts.fallbackColumn == "") != (opts.fallbackSelector == "") {
 		return fmt.Errorf("--fallback-column and --fallback-selector must be used together")
+	}
+
+	if err := validateFormat(opts.format); err != nil {
+		return err
 	}
 
 	id := opts.jobID
@@ -124,6 +137,9 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		FallbackSelector: opts.fallbackSelector,
 		NoTierLearning:   opts.noTierLearning,
 		TierCachePath:    opts.tierCachePath,
+		Format:           opts.format,
+		Readability:      opts.readability,
+		NoMetadata:       opts.noMetadata,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

@@ -29,6 +29,9 @@ type JobConfig struct {
 	FallbackSelector string `json:"fallback_selector,omitempty"`
 	NoTierLearning   bool   `json:"no_tier_learning,omitempty"`
 	TierCachePath    string `json:"tier_cache_path,omitempty"`
+	Format           string `json:"format,omitempty"`
+	Readability      bool   `json:"readability,omitempty"`
+	NoMetadata       bool   `json:"no_metadata,omitempty"`
 }
 
 // trawlRoot returns the top-level trawl state directory, honoring

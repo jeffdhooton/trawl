@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,9 @@ type scrapeOpts struct {
 	forceTier      string
 	noTierLearning bool
 	tierCachePath  string
+	format         string
+	readability    bool
+	noMetadata     bool
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -70,6 +74,12 @@ Use --selector name=css multiple times to extract structured fields:
 		"disable the cross-job host→tier cache")
 	cmd.Flags().StringVar(&opts.tierCachePath, "tier-cache-path", "",
 		"override the default tier-cache directory ($TRAWL_HOME/tier-cache)")
+	cmd.Flags().StringVar(&opts.format, "format", "",
+		`body format in the output record: "html" or "markdown". Empty omits the body field.`)
+	cmd.Flags().BoolVar(&opts.readability, "readability", false,
+		"strip nav/footer/ads boilerplate before CSS extraction and markdown conversion")
+	cmd.Flags().BoolVar(&opts.noMetadata, "no-metadata", false,
+		"skip automatic page metadata extraction (title, OG, canonical, JSON-LD)")
 
 	return cmd
 }
@@ -133,7 +143,16 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	}
 	defer release()
 
-	rec, routeErr := routeAndBuild(ctx, r, canonURL, rawURL, fields)
+	copts := contentOpts{
+		format:      opts.format,
+		readability: opts.readability,
+		noMetadata:  opts.noMetadata,
+	}
+	if err := validateFormat(copts.format); err != nil {
+		return err
+	}
+
+	rec, routeErr := routeAndBuild(ctx, r, canonURL, rawURL, fields, copts)
 	if err := sink.Write(rec); err != nil {
 		return fmt.Errorf("write record: %w", err)
 	}
@@ -158,12 +177,30 @@ func parseFieldSpecs(specs []string) ([]extract.Field, error) {
 	return fields, nil
 }
 
+// contentOpts bundles the content-extraction knobs that scrape/batch
+// expose and thread through routeAndBuild. Kept as a struct so adding
+// new content-phase features (e.g. --format xml) doesn't require
+// touching every call site.
+type contentOpts struct {
+	// format is "", "html", or "markdown". Empty means "don't emit a
+	// body field" — preserves backward compatibility with existing
+	// JSONL consumers that never asked for one.
+	format string
+	// readability runs boilerplate removal on the body BEFORE CSS
+	// extraction and markdown conversion. Metadata extraction still
+	// uses the original body because readability strips <head> content.
+	readability bool
+	// noMetadata skips automatic PageMetadata scraping. Escape hatch;
+	// off by default since metadata extraction is cheap.
+	noMetadata bool
+}
+
 // routeAndBuild runs one URL through the tiered router and builds the
 // output.Record. It returns a non-nil error only when every tier failed or
 // the failure is non-escalatable (e.g. 404, unsupported content-type); in
 // those cases the record is still populated with whatever evidence the last
 // attempt captured, so callers can persist it.
-func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL string, fields []extract.Field) (output.Record, error) {
+func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL string, fields []extract.Field, copts contentOpts) (output.Record, error) {
 	outcome, routeErr := r.Route(ctx, engine.Request{URL: canonURL})
 
 	// Pick the best result available for the record (success > last attempt).
@@ -199,8 +236,30 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 		return rec, routeErr
 	}
 
+	// Page metadata is extracted from the ORIGINAL body, before any
+	// readability pass strips the <head>. og:* tags, canonical URL,
+	// and JSON-LD all live in <head> and must survive.
+	if best != nil && !copts.noMetadata && isHTML(best.ContentType) {
+		if pm := extract.Metadata(best.Body, rec.CanonicalURL); pm != nil {
+			rec.Metadata.Page = pm
+		}
+	}
+
+	// Content body for CSS extraction, markdown conversion, and the
+	// Record.Body field. If --readability is on, run the boilerplate
+	// remover first — its output becomes the source for everything
+	// below. On failure Readable returns the original body, so this
+	// is always safe.
+	contentBody := []byte{}
+	if best != nil {
+		contentBody = best.Body
+		if copts.readability && isHTML(best.ContentType) {
+			contentBody = extract.Readable(best.Body, rec.CanonicalURL)
+		}
+	}
+
 	if len(fields) > 0 && best != nil {
-		ex, err := extract.CSS(best.Body, fields)
+		ex, err := extract.CSS(contentBody, fields)
 		if err != nil {
 			rec.Error = "extract: " + err.Error()
 			rec.FailureCategory = string(failure.CatExtractionFailed)
@@ -215,10 +274,52 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 		}
 	}
 
+	// Populate the Body field if --format was set. Empty format means
+	// existing JSONL consumers stay backward-compatible (no body in the
+	// record). html passes through verbatim; markdown runs the converter.
+	if best != nil && copts.format != "" {
+		switch copts.format {
+		case "html":
+			rec.Body = string(contentBody)
+			rec.BodyFormat = "html"
+		case "markdown":
+			md, err := extract.ToMarkdown(contentBody, rec.CanonicalURL)
+			if err != nil {
+				// Converter failure → log into Metadata but don't fail
+				// the row. Markdown is best-effort; downstream can fall
+				// back to re-running the request or ignoring the row.
+				rec.Body = md // fallback is the raw HTML per ToMarkdown contract
+				rec.BodyFormat = "html"
+			} else {
+				rec.Body = md
+				rec.BodyFormat = "markdown"
+			}
+		}
+	}
+
 	// Final classification — uses the router error (if any), the final
 	// status code, and the formatted reason field together.
 	rec.FailureCategory = string(failure.Classify(routeErr, rec.StatusCode, rec.Error))
 	return rec, nil
+}
+
+// validateFormat returns an error if the --format value isn't one of the
+// supported choices. Empty is valid and means "don't emit the body field."
+func validateFormat(format string) error {
+	switch format {
+	case "", "html", "markdown":
+		return nil
+	default:
+		return fmt.Errorf("invalid --format %q (want html, markdown, or empty)", format)
+	}
+}
+
+// isHTML returns true if the Content-Type header smells like HTML.
+// Metadata, readability, and markdown conversion only make sense on
+// HTML bodies; applying them to application/json would be nonsensical.
+func isHTML(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return ct == "" || strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml")
 }
 
 func hashBody(b []byte) string {

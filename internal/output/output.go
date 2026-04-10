@@ -5,6 +5,8 @@ package output
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/jeffdhooton/trawl/internal/extract"
 )
 
 // Record is the canonical shape of one scraped page's output.
@@ -18,6 +20,11 @@ type Record struct {
 	DurationMS      int64          `json:"duration_ms"`
 	ContentHash     string         `json:"content_hash,omitempty"`
 	Extracted       map[string]any `json:"extracted,omitempty"`
+	// Body holds the fetched content in the format requested via --format.
+	// Empty when --format is not set, so existing JSONL consumers that
+	// never asked for a body don't see record bloat.
+	Body       string `json:"body,omitempty"`
+	BodyFormat string `json:"body_format,omitempty"` // "html" | "markdown"
 	Metadata        Metadata       `json:"metadata"`
 	Error           string         `json:"error,omitempty"`
 	// FailureCategory is the classified bucket for stats aggregation.
@@ -28,12 +35,13 @@ type Record struct {
 
 // Metadata holds bookkeeping fields that don't belong in Extracted.
 type Metadata struct {
-	ContentType string           `json:"content_type,omitempty"`
-	BodyBytes   int              `json:"body_bytes,omitempty"`
-	FinalURL    string           `json:"final_url,omitempty"`
-	Redirects   []string         `json:"redirects,omitempty"`
-	Extraction  *ExtractionStats `json:"extraction,omitempty"`
-	Discovery   *DiscoveryStats  `json:"discovery,omitempty"`
+	ContentType string                 `json:"content_type,omitempty"`
+	BodyBytes   int                    `json:"body_bytes,omitempty"`
+	FinalURL    string                 `json:"final_url,omitempty"`
+	Redirects   []string               `json:"redirects,omitempty"`
+	Extraction  *ExtractionStats       `json:"extraction,omitempty"`
+	Discovery   *DiscoveryStats        `json:"discovery,omitempty"`
+	Page        *extract.PageMetadata  `json:"page,omitempty"`
 }
 
 // DiscoveryStats records how a record's target URL was discovered when
