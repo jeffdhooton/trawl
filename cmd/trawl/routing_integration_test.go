@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -126,5 +127,84 @@ func TestRoutingEscalatesSPAShell(t *testing.T) {
 	spaTitle, _ := spaRec.Extracted["title"].(string)
 	if spaTitle != "Hydrated Title" {
 		t.Errorf("spa title = %q, want Hydrated Title", spaTitle)
+	}
+}
+
+// TestScrapeWithScreenshotDir verifies that scrape --screenshot-dir writes a
+// PNG when chromium serves the page, and that metadata.screenshot_path on
+// the record points at the written file. HTTP-served rows (a second scrape
+// against a static page) must NOT produce a screenshot file.
+func TestScrapeWithScreenshotDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping screenshot integration in -short mode")
+	}
+	if !chromiumLocallyAvailable() {
+		t.Skip("chrome/chromium not found on this host")
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("User-agent: *\nAllow: /\n"))
+	})
+	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body>
+			<h1>Visual evidence</h1>
+			<p>` + strings.Repeat("content ", 200) + `</p>
+		</body></html>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	trawlHome := withTrawlHome(t)
+	shotDir := filepath.Join(trawlHome, "shots")
+	outputFile := filepath.Join(trawlHome, "out.jsonl")
+
+	opts := scrapeOpts{
+		outputPath:    outputFile,
+		timeout:       60 * time.Second,
+		tiers:         "chromium",
+		forceTier:     "chromium",
+		screenshotDir: shotDir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	if err := runScrape(ctx, srv.URL+"/page", opts); err != nil {
+		t.Fatalf("runScrape: %v", err)
+	}
+
+	records := readJSONL(t, outputFile)
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	rec := records[0]
+	if rec.Metadata.ScreenshotPath == "" {
+		t.Fatal("record.metadata.screenshot_path is empty — expected a PNG path")
+	}
+	info, err := os.Stat(rec.Metadata.ScreenshotPath)
+	if err != nil {
+		t.Fatalf("stat %s: %v", rec.Metadata.ScreenshotPath, err)
+	}
+	if info.Size() < 100 {
+		t.Errorf("PNG suspiciously small: %d bytes", info.Size())
+	}
+
+	// Second scrape with http tier forced: must NOT produce a screenshot.
+	outputFile2 := filepath.Join(trawlHome, "out2.jsonl")
+	opts2 := scrapeOpts{
+		outputPath:    outputFile2,
+		timeout:       30 * time.Second,
+		tiers:         "http",
+		forceTier:     "http",
+		screenshotDir: shotDir,
+	}
+	if err := runScrape(ctx, srv.URL+"/page", opts2); err != nil {
+		t.Fatalf("runScrape (http): %v", err)
+	}
+	httpRec := readJSONL(t, outputFile2)[0]
+	if httpRec.Metadata.ScreenshotPath != "" {
+		t.Errorf("HTTP-served record should not have a screenshot, got %q", httpRec.Metadata.ScreenshotPath)
 	}
 }

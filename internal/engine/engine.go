@@ -24,6 +24,10 @@ type Request struct {
 	URL string
 	// ExtraHeaders are merged on top of the engine's default headers.
 	ExtraHeaders http.Header
+	// WantScreenshot asks the engine to populate Result.Screenshot with a
+	// full-page PNG if it can. Engines that can't produce screenshots (HTTP)
+	// silently leave Screenshot nil. Only chromium implements it today.
+	WantScreenshot bool
 }
 
 // Result is what the engine saw. It includes the raw body; higher layers
@@ -37,4 +41,8 @@ type Result struct {
 	Body        []byte
 	Duration    time.Duration
 	Redirects   []string
+	// Screenshot is a full-page PNG captured by the engine when
+	// Request.WantScreenshot was set. Nil on engines that can't take one
+	// (HTTP) or when the caller didn't ask.
+	Screenshot []byte
 }

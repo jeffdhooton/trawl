@@ -1,6 +1,9 @@
 package extract
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestFirstLink(t *testing.T) {
 	cases := []struct {
@@ -93,6 +96,98 @@ func TestFirstLink(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAllLinks(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		base    string
+		sameDom bool
+		want    []string
+	}{
+		{
+			name: "collects absolute and relative same-domain links",
+			body: `<html><body>
+				<a href="/about">About</a>
+				<a href="https://example.com/contact">Contact</a>
+				<a href="https://other.com/elsewhere">Elsewhere</a>
+				</body></html>`,
+			base:    "https://example.com/",
+			sameDom: true,
+			want: []string{
+				"https://example.com/about",
+				"https://example.com/contact",
+			},
+		},
+		{
+			name: "same-domain off allows external hosts",
+			body: `<html><body>
+				<a href="/a">A</a>
+				<a href="https://other.com/b">B</a>
+				</body></html>`,
+			base:    "https://example.com/",
+			sameDom: false,
+			want: []string{
+				"https://example.com/a",
+				"https://other.com/b",
+			},
+		},
+		{
+			name: "dedupes repeated hrefs preserving first-seen order",
+			body: `<html><body>
+				<a href="/a">first</a>
+				<a href="/b">second</a>
+				<a href="/a">dup</a>
+				</body></html>`,
+			base:    "https://example.com/",
+			sameDom: true,
+			want: []string{
+				"https://example.com/a",
+				"https://example.com/b",
+			},
+		},
+		{
+			name: "skips javascript, mailto, tel, empty, fragment-only",
+			body: `<html><body>
+				<a href="javascript:void(0)">x</a>
+				<a href="mailto:a@b.com">x</a>
+				<a href="tel:+123">x</a>
+				<a href="#top">x</a>
+				<a href="">x</a>
+				<a href="/real">real</a>
+				</body></html>`,
+			base:    "https://example.com/",
+			sameDom: true,
+			want:    []string{"https://example.com/real"},
+		},
+		{
+			name:    "empty body returns nil",
+			body:    `<html><body></body></html>`,
+			base:    "https://example.com/",
+			sameDom: true,
+			want:    nil,
+		},
+		{
+			name: "strips fragments",
+			body: `<html><body><a href="/page#section">x</a></body></html>`,
+			base:    "https://example.com/",
+			sameDom: true,
+			want:    []string{"https://example.com/page"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := AllLinks([]byte(tc.body), tc.base, LinkOptions{SameDomain: tc.sameDom})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
 	}

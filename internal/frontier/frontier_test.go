@@ -1,8 +1,11 @@
 package frontier
 
 import (
+	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 )
 
 func newTestFrontier(t *testing.T) *Frontier {
@@ -211,6 +214,145 @@ func TestRecoverInFlight(t *testing.T) {
 	}
 	if len(seen) != 2 {
 		t.Errorf("expected 2 unique URLs after drain, got %v", seen)
+	}
+}
+
+func TestBlockingNextWakesOnEnqueue(t *testing.T) {
+	f := newTestFrontier(t)
+	ctx := context.Background()
+
+	// Seed with a URL, claim it to keep inFlight > 0 so BlockingNext
+	// doesn't hit the quiescence ErrEmpty path prematurely.
+	if _, _, err := f.Enqueue("https://example.com/seed"); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := f.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.InFlight() != 1 {
+		t.Fatalf("inFlight = %d, want 1", f.InFlight())
+	}
+
+	// Worker 2 blocks until we enqueue a child.
+	gotURL := make(chan string, 1)
+	go func() {
+		rec, err := f.BlockingNext(ctx)
+		if err != nil {
+			gotURL <- "ERR:" + err.Error()
+			return
+		}
+		gotURL <- rec.URL
+	}()
+
+	// Give the goroutine a moment to enter Wait, then enqueue a child.
+	time.Sleep(20 * time.Millisecond)
+	if _, _, err := f.EnqueueWithDepth("https://example.com/child", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case u := <-gotURL:
+		if u != "https://example.com/child" {
+			t.Errorf("BlockingNext returned %q", u)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("BlockingNext did not wake on enqueue")
+	}
+
+	// Tidy up — finish both URLs so the frontier is quiescent.
+	_ = f.MarkDone(seed.URL, "http")
+	_ = f.MarkDone("https://example.com/child", "http")
+}
+
+func TestBlockingNextTerminatesOnQuiescence(t *testing.T) {
+	f := newTestFrontier(t)
+	ctx := context.Background()
+
+	// One seed URL, one worker. When the worker finishes (MarkDone) and
+	// re-enters BlockingNext, inFlight == 0 and queue is empty, so it
+	// should receive ErrEmpty immediately instead of hanging.
+	if _, _, err := f.Enqueue("https://example.com/only"); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		rec, err := f.BlockingNext(ctx)
+		if err != nil {
+			done <- err
+			return
+		}
+		if err := f.MarkDone(rec.URL, "http"); err != nil {
+			done <- err
+			return
+		}
+		// Second call — must return ErrEmpty, not block forever.
+		_, err = f.BlockingNext(ctx)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrEmpty) {
+			t.Errorf("second BlockingNext: got %v, want ErrEmpty", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("BlockingNext hung after quiescence")
+	}
+}
+
+func TestBlockingNextReleasedByWake(t *testing.T) {
+	f := newTestFrontier(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Seed and claim one URL so inFlight stays > 0 and BlockingNext blocks
+	// instead of returning ErrEmpty.
+	if _, _, err := f.Enqueue("https://example.com/held"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Next(); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	result := make(chan error, 1)
+	go func() {
+		defer wg.Done()
+		_, err := f.BlockingNext(ctx)
+		result <- err
+	}()
+
+	// Simulate ctx cancellation + Wake from the crawl supervisor.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	f.Wake()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("got %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("BlockingNext did not release on Wake+cancel")
+	}
+	wg.Wait()
+}
+
+func TestEnqueueWithDepthRoundTrips(t *testing.T) {
+	f := newTestFrontier(t)
+
+	if _, _, err := f.EnqueueWithDepth("https://example.com/a", 2); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := f.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Depth != 2 {
+		t.Errorf("Depth = %d, want 2", rec.Depth)
 	}
 }
 

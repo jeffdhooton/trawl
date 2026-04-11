@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeffdhooton/trawl/internal/canonical"
@@ -16,10 +17,56 @@ import (
 	"github.com/jeffdhooton/trawl/internal/output"
 	"github.com/jeffdhooton/trawl/internal/politeness"
 	"github.com/jeffdhooton/trawl/internal/router"
+	"github.com/jeffdhooton/trawl/internal/schema"
 	"github.com/jeffdhooton/trawl/internal/stats"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
 )
+
+// crawlState is the per-job bundle for BFS crawl mode. Nil in batch mode.
+// The atomic counter tracks how many URLs the frontier currently holds
+// (seed + children) so workers can stop enqueueing once the --limit cap
+// is hit. It is an approximate bound — a few over is fine, the frontier
+// is already deduping via canonical URL.
+type crawlState struct {
+	maxDepth   int
+	sameDomain bool
+	limit      int // 0 = unlimited
+	enqueued   atomic.Int64
+}
+
+// tryReserve attempts to reserve an enqueue slot. Returns false if the
+// limit has already been hit. The counter is advisory — the frontier's
+// canonical-URL dedup is still the source of truth for "did this actually
+// get added." We decrement on dedup-rejected enqueues below.
+func (c *crawlState) tryReserve() bool {
+	if c == nil || c.limit <= 0 {
+		if c != nil {
+			c.enqueued.Add(1)
+		}
+		return true
+	}
+	for {
+		cur := c.enqueued.Load()
+		if cur >= int64(c.limit) {
+			return false
+		}
+		if c.enqueued.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// release returns a previously-reserved slot. Called when the frontier
+// rejects an enqueue (URL already seen) so duplicate children don't eat
+// into the limit budget.
+func (c *crawlState) release() {
+	if c == nil {
+		return
+	}
+	c.enqueued.Add(-1)
+}
 
 // runJob drains the frontier at jobDir using the given config. It is shared
 // by the batch and resume commands.
@@ -79,6 +126,19 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		log.Info().Str("tier_cache", tierCachePath).Msg("tier learning enabled")
 	}
 
+	// Opt-in content cache. Parse TTL once here; an invalid string
+	// degrades to 24h via parseCacheTTL rather than failing the job.
+	cacheTTL := parseCacheTTL(cfg.CacheTTL, 24*time.Hour)
+	contentCache, contentCachePath, _ := openContentCache(cfg.CacheEnabled, cfg.CachePath, cacheTTL)
+	defer contentCache.Close()
+	r.WithContentCache(contentCache)
+	if contentCachePath != "" {
+		log.Info().
+			Str("content_cache", contentCachePath).
+			Str("ttl", cacheTTL.String()).
+			Msg("content cache enabled")
+	}
+
 
 	gateCfg := politeness.Default()
 	gateCfg.UserAgent = httpCfg.UserAgent
@@ -106,9 +166,53 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	}
 
 	copts := contentOpts{
-		format:      cfg.Format,
-		readability: cfg.Readability,
-		noMetadata:  cfg.NoMetadata,
+		format:        cfg.Format,
+		readability:   cfg.Readability,
+		noMetadata:    cfg.NoMetadata,
+		screenshotDir: cfg.ScreenshotDir,
+	}
+	if cfg.SchemaPath != "" {
+		s, err := schema.Load(cfg.SchemaPath)
+		if err != nil {
+			return fmt.Errorf("load schema: %w", err)
+		}
+		copts.schema = s
+		log.Info().Str("schema", cfg.SchemaPath).Int("fields", len(s.Fields)).Msg("schema loaded")
+	}
+
+	// In crawl mode, build the shared crawlState and seed its enqueued
+	// counter with the current frontier Total so resumed crawls don't
+	// start their limit budget at zero.
+	var cstate *crawlState
+	if cfg.CrawlMode {
+		fs, err := f.Stats()
+		if err != nil {
+			return fmt.Errorf("frontier stats: %w", err)
+		}
+		cstate = &crawlState{
+			maxDepth:   cfg.CrawlMaxDepth,
+			sameDomain: cfg.CrawlSameDomain,
+			limit:      cfg.CrawlLimit,
+		}
+		cstate.enqueued.Store(int64(fs.Total))
+		log.Info().
+			Int("max_depth", cstate.maxDepth).
+			Int("limit", cstate.limit).
+			Bool("same_domain", cstate.sameDomain).
+			Int("already_enqueued", fs.Total).
+			Msg("crawl mode active")
+
+		// Watchdog: on ctx cancellation wake the frontier so any blocked
+		// BlockingNext returns. Exits on wg completion via the done chan.
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				f.Wake()
+			case <-done:
+			}
+		}()
 	}
 
 	for i := 0; i < concurrency; i++ {
@@ -116,7 +220,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		go func(id int) {
 			defer wg.Done()
 			runWorker(ctx, id, f, gate, r, fields, sink, deadLetter, collector, wstats,
-				cfg.FallbackSelector, copts)
+				cfg.FallbackSelector, copts, cstate)
 		}(i)
 	}
 	wg.Wait()
@@ -217,17 +321,27 @@ func runWorker(
 	_ *workerStats,
 	fallbackSelector string,
 	copts contentOpts,
+	cstate *crawlState,
 ) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		rec, err := f.Next()
+		var rec frontier.Record
+		var err error
+		if cstate != nil {
+			// Crawl mode: block until new work arrives or the crawl is
+			// quiescent (queue empty AND no worker in flight).
+			rec, err = f.BlockingNext(ctx)
+		} else {
+			// Batch mode: the frontier is pre-filled, so ErrEmpty means done.
+			rec, err = f.Next()
+		}
 		if errors.Is(err, frontier.ErrEmpty) {
-			// Batch mode enqueues everything up-front, so an empty frontier
-			// means we're done. Full BFS crawl (later) will need workers
-			// to block until new URLs arrive.
+			return
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
 		if err != nil {
@@ -235,8 +349,8 @@ func runWorker(
 			return
 		}
 
-		processOne(ctx, rec.URL, rec.Fallback, f, gate, r, fields, sink, deadLetter, collector,
-			fallbackSelector, copts)
+		processOne(ctx, rec, f, gate, r, fields, sink, deadLetter, collector,
+			fallbackSelector, copts, cstate)
 	}
 }
 
@@ -250,8 +364,7 @@ func shouldTryFallback(cat failure.Category) bool {
 
 func processOne(
 	ctx context.Context,
-	canonURL string,
-	fallbackURL string,
+	frec frontier.Record,
 	f *frontier.Frontier,
 	gate *politeness.Gate,
 	r *router.Router,
@@ -261,7 +374,10 @@ func processOne(
 	collector *stats.Collector,
 	fallbackSelector string,
 	copts contentOpts,
+	cstate *crawlState,
 ) {
+	canonURL := frec.URL
+	fallbackURL := frec.Fallback
 	l := log.With().Str("url", canonURL).Logger()
 	firstTier := r.Tiers()[0]
 
@@ -299,7 +415,9 @@ func processOne(
 	defer release()
 
 	// First attempt: route the primary URL through the full tier ladder.
-	record, routeErr := routeAndBuild(ctx, r, canonURL, canonURL, fields, copts)
+	// Crawl mode needs the raw engine result to discover links, so go
+	// through the *WithResult variant — batch mode just discards it.
+	record, best, routeErr := routeAndBuildWithResult(ctx, r, canonURL, canonURL, fields, copts)
 
 	if ctx.Err() != nil {
 		// Caller context cancelled — every tier likely failed with a deadline
@@ -390,8 +508,74 @@ func processOne(
 		l.Debug().Str("tier", tier).Str("category", record.FailureCategory).Str("err", msg).Msg("fetch failed")
 		return
 	}
+
+	// Crawl mode: discover links on success. Failed fetches have no body
+	// to parse, so we skip discovery there (per the agreed BFS design).
+	// MarkDone happens AFTER discovery so BlockingNext's quiescence check
+	// doesn't race — children are enqueued while this URL still counts as
+	// in-flight, meaning a sibling worker that wakes on the enqueue
+	// broadcast can't mistakenly conclude the crawl is done.
+	if cstate != nil && best != nil {
+		discoverAndEnqueue(l, f, best, frec.Depth, cstate)
+	}
 	_ = f.MarkDone(canonURL, tier)
 }
+
+// discoverAndEnqueue parses links from the fetched body and enqueues
+// every unseen child at parentDepth+1, subject to the --depth, --limit,
+// and --same-domain caps in cstate.
+//
+// This is the only place in the worker where the crawl frontier grows.
+// Every child that overflows --depth is silently skipped; every child
+// that overflows --limit stops further enqueues for this parent (the
+// limit is global, not per-parent).
+func discoverAndEnqueue(l zlog, f *frontier.Frontier, best *engine.Result, parentDepth int, cstate *crawlState) {
+	childDepth := parentDepth + 1
+	if childDepth > cstate.maxDepth {
+		return
+	}
+	if !isHTML(best.ContentType) {
+		return
+	}
+	base := best.FinalURL
+	if base == "" {
+		base = best.URL
+	}
+	links, err := extract.AllLinks(best.Body, base, extract.LinkOptions{SameDomain: cstate.sameDomain})
+	if err != nil {
+		l.Debug().Err(err).Msg("crawl: link extraction failed")
+		return
+	}
+	added := 0
+	for _, link := range links {
+		if !cstate.tryReserve() {
+			l.Debug().Int("limit", cstate.limit).Msg("crawl: limit reached, stop enqueueing children")
+			return
+		}
+		_, wasAdded, err := f.EnqueueWithDepth(link, childDepth)
+		if err != nil {
+			// Canonicalize failure on the child — release the budget slot
+			// so genuinely valid children downstream still fit under the cap.
+			cstate.release()
+			l.Debug().Str("child", link).Err(err).Msg("crawl: skip invalid child")
+			continue
+		}
+		if !wasAdded {
+			// Dedup hit — already seen. Release the budget slot, it didn't
+			// actually cost us any new frontier space.
+			cstate.release()
+			continue
+		}
+		added++
+	}
+	if added > 0 {
+		l.Debug().Int("children", added).Int("depth", childDepth).Msg("crawl: enqueued children")
+	}
+}
+
+// zlog aliases zerolog.Logger so discoverAndEnqueue's signature reads
+// naturally without a second import in every caller.
+type zlog = zerolog.Logger
 
 // tryFallback runs the hybrid-discovery fallback path for a single row.
 // On success, it returns a fully-populated output.Record whose URL is the

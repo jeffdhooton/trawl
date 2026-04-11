@@ -35,13 +35,21 @@ type Record struct {
 
 // Metadata holds bookkeeping fields that don't belong in Extracted.
 type Metadata struct {
-	ContentType string                 `json:"content_type,omitempty"`
-	BodyBytes   int                    `json:"body_bytes,omitempty"`
-	FinalURL    string                 `json:"final_url,omitempty"`
-	Redirects   []string               `json:"redirects,omitempty"`
-	Extraction  *ExtractionStats       `json:"extraction,omitempty"`
-	Discovery   *DiscoveryStats        `json:"discovery,omitempty"`
-	Page        *extract.PageMetadata  `json:"page,omitempty"`
+	ContentType    string                `json:"content_type,omitempty"`
+	BodyBytes      int                   `json:"body_bytes,omitempty"`
+	FinalURL       string                `json:"final_url,omitempty"`
+	Redirects      []string              `json:"redirects,omitempty"`
+	Extraction     *ExtractionStats      `json:"extraction,omitempty"`
+	Discovery      *DiscoveryStats       `json:"discovery,omitempty"`
+	Page           *extract.PageMetadata `json:"page,omitempty"`
+	// ScreenshotPath is the absolute path to a PNG written by the
+	// chromium engine when --screenshot-dir was set AND chromium was
+	// the tier that served the page. HTTP-served records leave it empty.
+	ScreenshotPath string `json:"screenshot_path,omitempty"`
+	// FromCache is true when the record was reconstructed from the
+	// cross-job content cache rather than a live fetch. Set by the
+	// router when a cache hit short-circuits the tier loop.
+	FromCache bool `json:"from_cache,omitempty"`
 }
 
 // DiscoveryStats records how a record's target URL was discovered when

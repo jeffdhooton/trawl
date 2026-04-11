@@ -104,3 +104,53 @@ func TestChromiumFetchRendersJS(t *testing.T) {
 		t.Errorf("expected hydrated content in body, got: %s", res.Body)
 	}
 }
+
+func TestChromiumCapturesScreenshot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping chromium test in -short mode")
+	}
+	if !chromiumAvailable() {
+		t.Skip("chrome/chromium not found on this host")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><h1>screenshot me</h1></body></html>`))
+	}))
+	defer srv.Close()
+
+	e := NewChromium(DefaultChromiumConfig())
+	defer e.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// WantScreenshot=false should leave Screenshot nil.
+	noShot, err := e.Fetch(ctx, Request{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("Fetch (no screenshot): %v", err)
+	}
+	if noShot.Screenshot != nil {
+		t.Errorf("Screenshot populated without WantScreenshot: %d bytes", len(noShot.Screenshot))
+	}
+
+	// WantScreenshot=true should return a non-empty PNG.
+	withShot, err := e.Fetch(ctx, Request{URL: srv.URL, WantScreenshot: true})
+	if err != nil {
+		t.Fatalf("Fetch (screenshot): %v", err)
+	}
+	if len(withShot.Screenshot) < 100 {
+		t.Fatalf("Screenshot too small to be a real PNG: %d bytes", len(withShot.Screenshot))
+	}
+	// PNG magic: 89 50 4e 47 0d 0a 1a 0a
+	magic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	if len(withShot.Screenshot) < len(magic) {
+		t.Fatalf("Screenshot too short for PNG header")
+	}
+	for i, b := range magic {
+		if withShot.Screenshot[i] != b {
+			t.Errorf("Screenshot byte %d = 0x%x, want 0x%x (not a PNG?)", i, withShot.Screenshot[i], b)
+			break
+		}
+	}
+}

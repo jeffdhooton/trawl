@@ -86,3 +86,68 @@ func FirstLink(body []byte, base string, selector string, opts LinkOptions) (str
 
 	return resolved, nil
 }
+
+// AllLinks returns every <a href> in body whose scheme is http(s), resolved
+// against base. If opts.SameDomain is true, only links sharing the base
+// host (or a sibling subdomain) are returned. Fragments are stripped and
+// duplicates are removed while preserving first-seen order.
+//
+// Used by the crawl worker for BFS link discovery. Unlike FirstLink, it
+// does not take a selector — it scans every anchor. Callers that want a
+// narrower match should post-filter the returned slice.
+func AllLinks(body []byte, base string, opts LinkOptions) ([]string, error) {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("parse base: %w", err)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("parse html: %w", err)
+	}
+
+	wantHost := strings.ToLower(baseURL.Hostname())
+	seen := make(map[string]struct{})
+	var out []string
+
+	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
+		href, ok := s.Attr("href")
+		if !ok {
+			return
+		}
+		href = strings.TrimSpace(href)
+		if href == "" || strings.HasPrefix(href, "#") ||
+			strings.HasPrefix(href, "javascript:") ||
+			strings.HasPrefix(href, "mailto:") ||
+			strings.HasPrefix(href, "tel:") {
+			return
+		}
+
+		u, err := baseURL.Parse(href)
+		if err != nil {
+			return
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return
+		}
+
+		if opts.SameDomain {
+			host := strings.ToLower(u.Hostname())
+			if host != wantHost &&
+				!strings.HasSuffix(host, "."+wantHost) &&
+				!strings.HasSuffix(wantHost, "."+host) {
+				return
+			}
+		}
+
+		u.Fragment = ""
+		abs := u.String()
+		if _, dup := seen[abs]; dup {
+			return
+		}
+		seen[abs] = struct{}{}
+		out = append(out, abs)
+	})
+
+	return out, nil
+}

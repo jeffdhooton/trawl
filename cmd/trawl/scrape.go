@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/jeffdhooton/trawl/internal/output"
 	"github.com/jeffdhooton/trawl/internal/politeness"
 	"github.com/jeffdhooton/trawl/internal/router"
+	"github.com/jeffdhooton/trawl/internal/schema"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -35,6 +37,11 @@ type scrapeOpts struct {
 	format         string
 	readability    bool
 	noMetadata     bool
+	screenshotDir  string
+	cacheEnabled   bool
+	cacheTTL       time.Duration
+	cachePath      string
+	schemaPath     string
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -80,6 +87,16 @@ Use --selector name=css multiple times to extract structured fields:
 		"strip nav/footer/ads boilerplate before CSS extraction and markdown conversion")
 	cmd.Flags().BoolVar(&opts.noMetadata, "no-metadata", false,
 		"skip automatic page metadata extraction (title, OG, canonical, JSON-LD)")
+	cmd.Flags().StringVar(&opts.screenshotDir, "screenshot-dir", "",
+		"directory to write full-page PNG screenshots into. Only chromium-served pages produce a file.")
+	cmd.Flags().BoolVar(&opts.cacheEnabled, "cache", false,
+		"opt in to the cross-job content cache. Cached entries short-circuit the tier loop on hit.")
+	cmd.Flags().DurationVar(&opts.cacheTTL, "cache-ttl", 24*time.Hour,
+		"max age of a cache entry before it counts as a miss. 0 = never expire.")
+	cmd.Flags().StringVar(&opts.cachePath, "cache-path", "",
+		"override the default content-cache directory ($TRAWL_HOME/content-cache)")
+	cmd.Flags().StringVar(&opts.schemaPath, "schema", "",
+		"YAML/JSON schema file for structured extraction (see docs/examples/)")
 
 	return cmd
 }
@@ -120,6 +137,16 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	defer tierCache.Close()
 	r.WithCache(tierCache)
 
+	contentCache, contentCachePath, _ := openContentCache(opts.cacheEnabled, opts.cachePath, opts.cacheTTL)
+	defer contentCache.Close()
+	r.WithContentCache(contentCache)
+	if contentCachePath != "" {
+		log.Info().
+			Str("content_cache", contentCachePath).
+			Str("ttl", opts.cacheTTL.String()).
+			Msg("content cache enabled")
+	}
+
 	gateCfg := politeness.Default()
 	gateCfg.UserAgent = httpCfg.UserAgent
 	gateCfg.IgnoreRobots = opts.ignoreRobots
@@ -144,12 +171,20 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	defer release()
 
 	copts := contentOpts{
-		format:      opts.format,
-		readability: opts.readability,
-		noMetadata:  opts.noMetadata,
+		format:        opts.format,
+		readability:   opts.readability,
+		noMetadata:    opts.noMetadata,
+		screenshotDir: opts.screenshotDir,
 	}
 	if err := validateFormat(copts.format); err != nil {
 		return err
+	}
+	if opts.schemaPath != "" {
+		s, err := schema.Load(opts.schemaPath)
+		if err != nil {
+			return fmt.Errorf("load schema: %w", err)
+		}
+		copts.schema = s
 	}
 
 	rec, routeErr := routeAndBuild(ctx, r, canonURL, rawURL, fields, copts)
@@ -193,6 +228,17 @@ type contentOpts struct {
 	// noMetadata skips automatic PageMetadata scraping. Escape hatch;
 	// off by default since metadata extraction is cheap.
 	noMetadata bool
+	// screenshotDir, when non-empty, asks the router to set
+	// Request.WantScreenshot and writes any returned PNG to
+	// <dir>/<sha256-of-canonical-url>.png. Only chromium produces
+	// screenshots; HTTP-served records leave metadata.screenshot_path
+	// empty.
+	screenshotDir string
+	// schema, when non-nil, runs nested structured extraction against
+	// the same contentBody as the flat CSS extractor. Results are
+	// merged into Record.Extracted under the schema's field names;
+	// schema keys win on collision with --selector flat keys.
+	schema *schema.Schema
 }
 
 // routeAndBuild runs one URL through the tiered router and builds the
@@ -201,7 +247,20 @@ type contentOpts struct {
 // those cases the record is still populated with whatever evidence the last
 // attempt captured, so callers can persist it.
 func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL string, fields []extract.Field, copts contentOpts) (output.Record, error) {
-	outcome, routeErr := r.Route(ctx, engine.Request{URL: canonURL})
+	rec, _, err := routeAndBuildWithResult(ctx, r, canonURL, origURL, fields, copts)
+	return rec, err
+}
+
+// routeAndBuildWithResult is routeAndBuild that additionally exposes the
+// raw engine.Result used to populate the record. The crawl worker needs
+// the body for link discovery; returning it here avoids a second fetch.
+// The returned *engine.Result may be nil when every tier failed without
+// producing any result at all (DNS failure, etc).
+func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, origURL string, fields []extract.Field, copts contentOpts) (output.Record, *engine.Result, error) {
+	outcome, routeErr := r.Route(ctx, engine.Request{
+		URL:            canonURL,
+		WantScreenshot: copts.screenshotDir != "",
+	})
 
 	// Pick the best result available for the record (success > last attempt).
 	best := outcome.Result
@@ -233,7 +292,7 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 		}
 		rec.Error = routeErr.Error()
 		rec.FailureCategory = string(failure.Classify(routeErr, rec.StatusCode, rec.Error))
-		return rec, routeErr
+		return rec, best, routeErr
 	}
 
 	// Page metadata is extracted from the ORIGINAL body, before any
@@ -263,7 +322,7 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 		if err != nil {
 			rec.Error = "extract: " + err.Error()
 			rec.FailureCategory = string(failure.CatExtractionFailed)
-			return rec, nil
+			return rec, best, nil
 		}
 		rec.Metadata.Extraction = &output.ExtractionStats{
 			Fields: len(fields),
@@ -271,6 +330,25 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 		}
 		if len(ex) > 0 {
 			rec.Extracted = ex
+		}
+	}
+
+	// Schema-based structured extraction. Runs on the SAME contentBody
+	// as the flat CSS extractor, so --readability applies uniformly.
+	// Schema results merge into rec.Extracted; schema keys win on
+	// collision with --selector flat keys (schema is more specific).
+	if copts.schema != nil && best != nil && isHTML(best.ContentType) {
+		sx, err := schema.Extract(contentBody, rec.CanonicalURL, copts.schema)
+		if err != nil {
+			rec.Error = "schema: " + err.Error()
+			rec.FailureCategory = string(failure.CatExtractionFailed)
+			return rec, best, nil
+		}
+		if rec.Extracted == nil {
+			rec.Extracted = map[string]any{}
+		}
+		for k, v := range sx {
+			rec.Extracted[k] = v
 		}
 	}
 
@@ -297,10 +375,48 @@ func routeAndBuild(ctx context.Context, r *router.Router, canonURL, origURL stri
 		}
 	}
 
+	// Screenshot: write the PNG to <dir>/<sha256-of-canonical-url>.png if
+	// the engine captured one. Only chromium produces screenshots; HTTP-
+	// served rows leave metadata.screenshot_path empty. On I/O failure we
+	// log and continue — screenshots are best-effort.
+	if best != nil && len(best.Screenshot) > 0 && copts.screenshotDir != "" {
+		if path, werr := writeScreenshot(copts.screenshotDir, rec.CanonicalURL, best.Screenshot); werr != nil {
+			log.Warn().Str("url", rec.CanonicalURL).Err(werr).Msg("screenshot write failed")
+		} else {
+			rec.Metadata.ScreenshotPath = path
+		}
+	}
+
+	// from_cache flag is surfaced from the router outcome so downstream
+	// consumers can distinguish "live fetch" rows from "served from cache."
+	if outcome.FromCache {
+		rec.Metadata.FromCache = true
+	}
+
 	// Final classification — uses the router error (if any), the final
 	// status code, and the formatted reason field together.
 	rec.FailureCategory = string(failure.Classify(routeErr, rec.StatusCode, rec.Error))
-	return rec, nil
+	return rec, best, nil
+}
+
+// writeScreenshot persists a PNG to <dir>/<sha256-of-url>.png. The
+// filename is deterministic so re-running the same scrape overwrites
+// the previous capture rather than accumulating dup files.
+func writeScreenshot(dir, canonURL string, png []byte) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	sum := sha256.Sum256([]byte(canonURL))
+	name := hex.EncodeToString(sum[:]) + ".png"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, png, 0o644); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path, nil // fall back to the relative path on Abs failure
+	}
+	return abs, nil
 }
 
 // validateFormat returns an error if the --format value isn't one of the

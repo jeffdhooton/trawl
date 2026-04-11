@@ -1,0 +1,49 @@
+# Stanford Encyclopedia of Philosophy article schema.
+#
+# Extracts the structured pieces of a /entries/<slug>/ page:
+# title, publication info, table of contents, related entries,
+# author, and copyright line. Tested against plato.stanford.edu/entries/kant/
+# (11 TOC entries, 24 related entries, author "Michael Rohlf").
+#
+# Usage:
+#   trawl scrape https://plato.stanford.edu/entries/kant/ \
+#     --schema docs/examples/sep-article.yaml \
+#     --format markdown --readability -o kant.jsonl
+#
+# Relative hrefs (e.g. "../aesthetics/") are intentionally preserved —
+# trawl does not resolve them. Join against record.canonical_url if you
+# need absolute URLs downstream.
+
+version: 1
+fields:
+  title:
+    selector: "h1"
+
+  pubinfo:
+    selector: "#pubinfo em"
+
+  toc_entries:
+    selector: "#toc > ul > li > a"
+    multiple: true
+    fields:
+      text:
+        selector: ""
+      anchor:
+        selector: ""
+        attr: "href"
+
+  related_entries:
+    selector: "#related-entries p a"
+    multiple: true
+    fields:
+      title:
+        selector: ""
+      href:
+        selector: ""
+        attr: "href"
+
+  author:
+    selector: "#article-copyright a[href^='http']"
+
+  copyright:
+    selector: "#article-copyright a[href*='info.html']"

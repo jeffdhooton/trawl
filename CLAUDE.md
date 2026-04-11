@@ -21,18 +21,29 @@ dns_failure), sitemap parsing (`trawl sitemap <url>`, library at
 persistent cache at `$TRAWL_HOME/tier-cache`), content extraction
 (`--format html|markdown`, `--readability`, automatic page metadata
 with Open Graph + Twitter + JSON-LD + published_at at
-`internal/extract/{metadata,markdown,readability}.go`).
+`internal/extract/{metadata,markdown,readability}.go`), BFS crawl
+(`trawl crawl <url> --depth N --same-domain --limit N`, frontier
+`BlockingNext` with sync.Cond quiescence detection, `extract.AllLinks`
+for link discovery, limit caps URLs *enqueued*), URL mapping
+(`trawl map <url>` with combined sitemap + HTML-crawl sources,
+plain-text URL list to stdout, HTTP-tier-only in-memory BFS),
+screenshot output (`--screenshot-dir` writes full-page PNGs via
+`page.CaptureScreenshot` from chromium-served rows, stamps
+`metadata.screenshot_path`), content cache (`--cache` opt-in,
+BadgerDB-backed `internal/cache` keyed by URL+tier, router checks
+inside the tier loop, stamps `metadata.from_cache`), schema
+extraction (`--schema <file.yaml|.json>`, `internal/schema` package,
+nested selector/attr/multiple with empty-selector self-ref for
+array-of-objects, example at `docs/examples/sep-article.yaml`
+verified against plato.stanford.edu/entries/kant/).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
 **Deferred:** Lightpanda — see DECISIONS.md for the decision rule
 and the three data points (11.4% → 4.4% → 14.08% escalation).
 
-**Current direction:** BFS crawl mode — `trawl crawl <url> --depth N
---same-domain --limit N`. Reuses the persistent frontier with workers
-blocking on empty queue instead of exiting. Composes with the
-content-extraction phase to become "give me clean markdown from an
-entire site." See `docs/ROADMAP.md` for the phased plan and the
-explicit out-of-scope list.
+**Current direction:** Open — the Firecrawl parity batch (BFS, map,
+screenshot, cache, schema extract) is complete. See `docs/ROADMAP.md`
+for remaining deferred items.
 
 ## Read these first
 
@@ -79,15 +90,17 @@ the next session must know" in `docs/DECISIONS.md`.
 ## Project layout
 
 ```
-cmd/trawl/              cobra entrypoint, batch/scrape/resume commands
+cmd/trawl/              cobra entrypoint, scrape/batch/crawl/map/sitemap/resume commands
+internal/cache/         BadgerDB-backed content cache (URL+tier → engine.Result, TTL)
 internal/canonical/     URL canonicalization + tests
-internal/engine/        HTTP + Chromium engines, Engine interface
-internal/extract/       goquery CSS extractor + FirstLink resolver
+internal/engine/        HTTP + Chromium engines, Engine interface (Request.WantScreenshot)
+internal/extract/       goquery CSS extractor + FirstLink / AllLinks resolvers
 internal/failure/       Classify() — maps errors to discrete categories
-internal/frontier/      BadgerDB-backed URL queue
+internal/frontier/      BadgerDB-backed URL queue (blocking Next for crawl)
 internal/output/        JSONL sink + Record type
 internal/politeness/    robots.txt cache + per-domain rate/concurrency
-internal/router/        tiered escalation loop
+internal/router/        tiered escalation loop (w/ content cache hook)
+internal/schema/        YAML/JSON schema → nested structured extraction
 internal/sitemap/       sitemap.xml discovery + index recursion + gzip
 internal/stats/         per-job stats.json aggregator
 internal/validity/      heuristics for "did this page actually load"
@@ -98,6 +111,7 @@ docs/DECISIONS.md       architectural decision log
 docs/TODO.md            standing commitments + open papercuts
 docs/PROXIES.md         future P2 proxy planning (not yet committed in
                         all sessions — owned by Jeff, leave untouched)
+docs/examples/          shippable example schemas (sep-article.yaml)
 seed/                   benchmark test data (owned by Jeff, untouched)
 ```
 

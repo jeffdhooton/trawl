@@ -11,6 +11,7 @@
 package frontier
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -49,6 +50,10 @@ type Record struct {
 	// recover the pricing page from a live homepage. Stored verbatim from
 	// the seed row — not canonicalized, not deduped.
 	Fallback string `json:"fallback,omitempty"`
+	// Depth is the BFS depth of this URL relative to the crawl seed. Seeds
+	// are depth 0; children enqueued by the crawl worker are depth+1. Only
+	// meaningful in crawl mode — batch jobs leave it at zero.
+	Depth int `json:"depth,omitempty"`
 }
 
 // Stats is a lightweight snapshot of frontier counts.
@@ -78,7 +83,14 @@ type Frontier struct {
 	db *badger.DB
 
 	mu      sync.Mutex
+	cond    *sync.Cond
 	nextSeq uint64
+	// inFlight is an in-memory counter of claimed-but-not-finished URLs.
+	// BlockingNext uses it as the "crawl is quiescent" signal: when the
+	// queue is empty AND inFlight == 0, no running worker can possibly
+	// discover new URLs, so the crawl has terminated. Not persisted —
+	// Recover reconstructs it on startup by counting StateInFlight rows.
+	inFlight int
 }
 
 // Open opens (or creates) a frontier at the given directory.
@@ -93,6 +105,7 @@ func Open(dir string) (*Frontier, error) {
 	}
 
 	f := &Frontier{db: db}
+	f.cond = sync.NewCond(&f.mu)
 	if err := f.loadNextSeq(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("load seq: %w", err)
@@ -105,11 +118,19 @@ func (f *Frontier) Close() error {
 	return f.db.Close()
 }
 
+// EnqueueOpts configures sidecar fields attached to a newly enqueued URL.
+// Zero values are fine for simple callers — batch mode passes none of them,
+// hybrid discovery passes Fallback, and crawl mode passes Depth.
+type EnqueueOpts struct {
+	Fallback string
+	Depth    int
+}
+
 // Enqueue adds a URL to the frontier if it has not been seen before.
 // It canonicalizes the URL first and returns (canonicalURL, added, error).
 // A URL that already exists in any state returns added=false.
 func (f *Frontier) Enqueue(rawURL string) (canonURL string, added bool, err error) {
-	return f.EnqueueWithFallback(rawURL, "")
+	return f.EnqueueOpts(rawURL, EnqueueOpts{})
 }
 
 // EnqueueWithFallback adds a URL to the frontier with an optional fallback
@@ -118,6 +139,18 @@ func (f *Frontier) Enqueue(rawURL string) (canonURL string, added bool, err erro
 // specific unreachable categories. Dedup is still driven by the canonical
 // form of rawURL.
 func (f *Frontier) EnqueueWithFallback(rawURL, fallback string) (canonURL string, added bool, err error) {
+	return f.EnqueueOpts(rawURL, EnqueueOpts{Fallback: fallback})
+}
+
+// EnqueueWithDepth adds a URL tagged with a BFS depth. Used by the crawl
+// worker to enqueue children at parent.depth+1.
+func (f *Frontier) EnqueueWithDepth(rawURL string, depth int) (canonURL string, added bool, err error) {
+	return f.EnqueueOpts(rawURL, EnqueueOpts{Depth: depth})
+}
+
+// EnqueueOpts is the general-purpose enqueue entry point. Prefer the
+// specialized wrappers above at call sites where the intent is clearer.
+func (f *Frontier) EnqueueOpts(rawURL string, opts EnqueueOpts) (canonURL string, added bool, err error) {
 	canonURL, err = canonical.Canonicalize(rawURL, canonical.Options{})
 	if err != nil {
 		return "", false, fmt.Errorf("canonicalize: %w", err)
@@ -143,7 +176,8 @@ func (f *Frontier) EnqueueWithFallback(rawURL, fallback string) (canonURL string
 			EnqueuedAt: time.Now().UTC(),
 			UpdatedAt:  time.Now().UTC(),
 			Seq:        seq,
-			Fallback:   fallback,
+			Fallback:   opts.Fallback,
+			Depth:      opts.Depth,
 		}
 		if err := putJSON(txn, urlKey, rec); err != nil {
 			return err
@@ -160,15 +194,74 @@ func (f *Frontier) EnqueueWithFallback(rawURL, fallback string) (canonURL string
 	if err != nil {
 		return "", false, err
 	}
+	if added {
+		// Wake any worker blocked inside BlockingNext so it can claim the
+		// new URL. Harmless in batch mode where nothing is ever blocked.
+		f.cond.Broadcast()
+	}
 	return canonURL, added, nil
 }
 
 // Next atomically claims the next queued URL, transitioning it to in_flight.
-// Returns ErrEmpty if nothing is queued.
+// Returns ErrEmpty if nothing is queued. Non-blocking — batch mode treats
+// ErrEmpty as "job done" because all URLs are enqueued up front.
 func (f *Frontier) Next() (Record, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.claimNextLocked()
+}
 
+// BlockingNext is the crawl-mode claim. It blocks until work is available
+// or the crawl terminates. Termination is signaled by ErrEmpty, returned
+// when the queue is empty AND no other worker is in-flight — so nobody
+// can possibly discover new URLs to add.
+//
+// Callers must arrange for ctx cancellation to wake the frontier via
+// Wake(), otherwise blocked workers will hang forever on a cancelled
+// context. runJob runs a tiny watchdog goroutine for exactly this reason.
+func (f *Frontier) BlockingNext(ctx context.Context) (Record, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return Record{}, err
+		}
+		rec, err := f.claimNextLocked()
+		if err == nil {
+			return rec, nil
+		}
+		if !errors.Is(err, ErrEmpty) {
+			return Record{}, err
+		}
+		if f.inFlight == 0 {
+			return Record{}, ErrEmpty
+		}
+		f.cond.Wait()
+	}
+}
+
+// Wake broadcasts to every worker blocked inside BlockingNext. The crawl
+// supervisor calls it once on ctx cancellation so shutdown unwedges
+// workers that were mid-Wait.
+func (f *Frontier) Wake() {
+	f.mu.Lock()
+	f.cond.Broadcast()
+	f.mu.Unlock()
+}
+
+// InFlight returns the number of URLs currently claimed but not yet
+// marked done or failed. Exposed for tests and stats only.
+func (f *Frontier) InFlight() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inFlight
+}
+
+// claimNextLocked pops the head of the queue and transitions it to
+// in_flight. Caller must hold f.mu. Returns ErrEmpty if the queue is
+// empty. On success, increments f.inFlight.
+func (f *Frontier) claimNextLocked() (Record, error) {
 	var out Record
 	err := f.db.Update(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
@@ -216,12 +309,13 @@ func (f *Frontier) Next() (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	f.inFlight++
 	return out, nil
 }
 
 // MarkDone transitions a URL to the done state.
 func (f *Frontier) MarkDone(canonURL, tier string) error {
-	return f.updateRecord(canonURL, func(r *Record) {
+	return f.finishRecord(canonURL, func(r *Record) {
 		r.State = StateDone
 		r.LastTier = tier
 		r.LastError = ""
@@ -231,7 +325,7 @@ func (f *Frontier) MarkDone(canonURL, tier string) error {
 
 // MarkFailed transitions a URL to the failed state with an error message.
 func (f *Frontier) MarkFailed(canonURL, tier string, fetchErr error) error {
-	return f.updateRecord(canonURL, func(r *Record) {
+	return f.finishRecord(canonURL, func(r *Record) {
 		r.State = StateFailed
 		r.LastTier = tier
 		if fetchErr != nil {
@@ -347,6 +441,40 @@ func (f *Frontier) updateRecord(canonURL string, mutate func(*Record)) error {
 		mutate(&rec)
 		return putJSON(txn, urlKey, rec)
 	})
+}
+
+// finishRecord is updateRecord plus inFlight bookkeeping: it decrements
+// the in-memory counter if the caller is transitioning out of in_flight,
+// then broadcasts so any BlockingNext waiter can re-check quiescence.
+func (f *Frontier) finishRecord(canonURL string, mutate func(*Record)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var wasInFlight bool
+	err := f.db.Update(func(txn *badger.Txn) error {
+		urlKey := []byte(prefixURL + canonURL)
+		item, err := txn.Get(urlKey)
+		if err != nil {
+			return err
+		}
+		var rec Record
+		if err := readJSON(item, &rec); err != nil {
+			return err
+		}
+		wasInFlight = rec.State == StateInFlight
+		mutate(&rec)
+		return putJSON(txn, urlKey, rec)
+	})
+	if err != nil {
+		return err
+	}
+	if wasInFlight && f.inFlight > 0 {
+		f.inFlight--
+	}
+	// Always broadcast. Even if the counter didn't move, the transition
+	// may have freed a worker that a BlockingNext sibling is waiting on.
+	f.cond.Broadcast()
+	return nil
 }
 
 func (f *Frontier) loadNextSeq() error {

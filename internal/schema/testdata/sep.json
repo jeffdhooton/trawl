@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "fields": {
+    "title": {
+      "selector": "h1"
+    },
+    "pubinfo": {
+      "selector": "#pubinfo em"
+    },
+    "toc_entries": {
+      "selector": "#toc > ul > li > a",
+      "multiple": true,
+      "fields": {
+        "text": { "selector": "" },
+        "anchor": { "selector": "", "attr": "href" }
+      }
+    },
+    "related_entries": {
+      "selector": "#related-entries p a",
+      "multiple": true,
+      "fields": {
+        "title": { "selector": "" },
+        "href": { "selector": "", "attr": "href" }
+      }
+    },
+    "author": {
+      "selector": "#article-copyright a[href^='http']"
+    },
+    "copyright": {
+      "selector": "#article-copyright a[href*='info.html']"
+    }
+  }
+}

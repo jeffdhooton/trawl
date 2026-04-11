@@ -32,6 +32,11 @@ type batchOpts struct {
 	format           string
 	readability      bool
 	noMetadata       bool
+	screenshotDir    string
+	cacheEnabled     bool
+	cacheTTL         time.Duration
+	cachePath        string
+	schemaPath       string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -87,6 +92,16 @@ gracefully and prints a resume command.`,
 		"strip nav/footer/ads boilerplate before CSS extraction and markdown conversion")
 	cmd.Flags().BoolVar(&opts.noMetadata, "no-metadata", false,
 		"skip automatic page metadata extraction (title, OG, canonical, JSON-LD)")
+	cmd.Flags().StringVar(&opts.screenshotDir, "screenshot-dir", "",
+		"directory to write full-page PNG screenshots into. Only chromium-served pages produce a file.")
+	cmd.Flags().BoolVar(&opts.cacheEnabled, "cache", false,
+		"opt in to the cross-job content cache. Cached entries short-circuit the tier loop on hit.")
+	cmd.Flags().DurationVar(&opts.cacheTTL, "cache-ttl", 24*time.Hour,
+		"max age of a cache entry before it counts as a miss. 0 = never expire.")
+	cmd.Flags().StringVar(&opts.cachePath, "cache-path", "",
+		"override the default content-cache directory ($TRAWL_HOME/content-cache)")
+	cmd.Flags().StringVar(&opts.schemaPath, "schema", "",
+		"YAML/JSON schema file for structured extraction (see docs/examples/)")
 
 	return cmd
 }
@@ -140,6 +155,11 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		Format:           opts.format,
 		Readability:      opts.readability,
 		NoMetadata:       opts.noMetadata,
+		ScreenshotDir:    opts.screenshotDir,
+		CacheEnabled:     opts.cacheEnabled,
+		CacheTTL:         opts.cacheTTL.String(),
+		CachePath:        opts.cachePath,
+		SchemaPath:       opts.schemaPath,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

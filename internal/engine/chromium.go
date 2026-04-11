@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -160,6 +161,7 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		finalURL   string
 		status     int64
 		respHeader map[string]any
+		screenshot []byte
 	)
 
 	// Capture the top-level navigation response so we can report a real
@@ -178,6 +180,24 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		chromedp.OuterHTML("html", &html, chromedp.ByQuery),
 		chromedp.Location(&finalURL),
 	)
+	// Screenshot must come AFTER OuterHTML so we don't miss any post-load
+	// DOM mutations. chromedp.FullScreenshot hardcodes JPEG via the quality
+	// parameter, so we call page.CaptureScreenshot directly to get PNG with
+	// captureBeyondViewport=true (full scrollable page).
+	if req.WantScreenshot {
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+			buf, err := page.CaptureScreenshot().
+				WithCaptureBeyondViewport(true).
+				WithFromSurface(true).
+				WithFormat(page.CaptureScreenshotFormatPng).
+				Do(ctx)
+			if err != nil {
+				return err
+			}
+			screenshot = buf
+			return nil
+		}))
+	}
 
 	if err := chromedp.Run(timeoutCtx, actions...); err != nil {
 		return nil, fmt.Errorf("chromium fetch: %w", err)
@@ -214,6 +234,7 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		ContentType: ct,
 		Body:        []byte(html),
 		Duration:    time.Since(start),
+		Screenshot:  screenshot,
 	}, nil
 }
 

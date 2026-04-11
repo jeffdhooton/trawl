@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/jeffdhooton/trawl/internal/cache"
 	"github.com/jeffdhooton/trawl/internal/engine"
 	"github.com/jeffdhooton/trawl/internal/tierlearn"
 	"github.com/jeffdhooton/trawl/internal/validity"
@@ -22,9 +23,10 @@ import (
 
 // Router routes fetches through a tiered set of engines.
 type Router struct {
-	engines []engine.Engine
-	checker validity.Checker
-	cache   tierlearn.Cache
+	engines      []engine.Engine
+	checker      validity.Checker
+	cache        tierlearn.Cache
+	contentCache cache.Cache
 }
 
 // New constructs a Router. Engines should be ordered cheap → expensive.
@@ -37,7 +39,12 @@ func New(engines []engine.Engine, checker validity.Checker) (*Router, error) {
 	if checker == nil {
 		checker = validity.NewChecker(validity.Default())
 	}
-	return &Router{engines: engines, checker: checker, cache: tierlearn.NopCache{}}, nil
+	return &Router{
+		engines:      engines,
+		checker:      checker,
+		cache:        tierlearn.NopCache{},
+		contentCache: cache.NopCache{},
+	}, nil
 }
 
 // WithCache attaches a tier-learning cache to the router. Passing nil is
@@ -48,6 +55,20 @@ func (r *Router) WithCache(c tierlearn.Cache) *Router {
 		r.cache = tierlearn.NopCache{}
 	} else {
 		r.cache = c
+	}
+	return r
+}
+
+// WithContentCache attaches a persistent content cache to the router.
+// Cache entries are keyed by (canonical URL, tier name) and short-circuit
+// the tier loop on hit. Passing nil is equivalent to cache.NopCache
+// (caching disabled). Safe to call before Route is invoked for the
+// first time; not safe to call concurrently with Route.
+func (r *Router) WithContentCache(c cache.Cache) *Router {
+	if c == nil {
+		r.contentCache = cache.NopCache{}
+	} else {
+		r.contentCache = c
 	}
 	return r
 }
@@ -105,6 +126,42 @@ func (r *Router) Route(ctx context.Context, req engine.Request) (*Outcome, error
 	for _, e := range ladder {
 		attempt := Attempt{Tier: e.Name()}
 
+		// Content cache lookup: if this (URL, tier) is cached and fresh,
+		// skip the live fetch entirely. Still run validity so a cached
+		// stub doesn't get served — if it fails validity we escalate
+		// past the cache entry to the next tier exactly as if the live
+		// fetch had returned that stub. The cached result is NOT re-put
+		// on hit; put only happens after live fetches.
+		if cached, hit := r.contentCache.Get(req.URL, e.Name()); hit {
+			vr := r.checker.Check(validity.Page{
+				URL:         req.URL,
+				StatusCode:  cached.StatusCode,
+				ContentType: cached.ContentType,
+				Body:        cached.Body,
+			})
+			attempt.Result = cached
+			attempt.Valid = vr.Valid
+			attempt.Reason = vr.Reason
+			attempt.FromCache = true
+			outcome.LastResult = cached
+			outcome.Attempts = append(outcome.Attempts, attempt)
+			if vr.Valid {
+				outcome.Tier = e.Name()
+				outcome.Result = cached
+				outcome.FromCache = true
+				// Do NOT touch the tier-learning cache on a content-cache
+				// hit — the learning signal is "what served this host
+				// LIVE," and a cache replay isn't new information.
+				return outcome, nil
+			}
+			if !vr.Escalate {
+				return outcome, fmt.Errorf("%s (cached): %s", e.Name(), vr.Reason)
+			}
+			// Validity said escalate on a cached entry — fall through to
+			// the next tier, same as a failed live fetch.
+			continue
+		}
+
 		res, err := e.Fetch(ctx, req)
 		if err != nil {
 			attempt.Err = err
@@ -133,6 +190,9 @@ func (r *Router) Route(ctx context.Context, req engine.Request) (*Outcome, error
 			if host != "" {
 				r.cache.Observe(host, e.Name())
 			}
+			// Store successful live fetch for future replay. Failed
+			// fetches and cached-replay successes are not re-put.
+			r.contentCache.Put(req.URL, e.Name(), res)
 			return outcome, nil
 		}
 		if !vr.Escalate {
@@ -203,6 +263,11 @@ type Outcome struct {
 	// for this fetch, or "" if the cache had no opinion. Surface-only —
 	// callers can use this to measure how often learning is firing.
 	PreferredTier string
+	// FromCache is true when the Result was reconstructed from the content
+	// cache rather than a live engine fetch. Set only when a content-cache
+	// is attached and returns a hit. Surface-only; downstream consumers use
+	// it to distinguish cache-served rows from live ones.
+	FromCache bool
 }
 
 // Attempt is a single engine's outcome during routing.
@@ -212,4 +277,8 @@ type Attempt struct {
 	Valid  bool
 	Reason string
 	Err    error
+	// FromCache is true when this attempt was served from the content
+	// cache instead of a live engine fetch. Useful for per-tier stats
+	// aggregation to distinguish cache-served rows from live ones.
+	FromCache bool
 }

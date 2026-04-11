@@ -32,6 +32,25 @@ type JobConfig struct {
 	Format           string `json:"format,omitempty"`
 	Readability      bool   `json:"readability,omitempty"`
 	NoMetadata       bool   `json:"no_metadata,omitempty"`
+	ScreenshotDir    string `json:"screenshot_dir,omitempty"`
+	SchemaPath       string `json:"schema_path,omitempty"`
+	// Content cache knobs (opt-in). When CacheEnabled is true the router
+	// consults a shared BadgerDB cache at CachePath (default
+	// $TRAWL_HOME/content-cache) and serves hits under CacheTTL without
+	// touching the live site.
+	CacheEnabled bool   `json:"cache_enabled,omitempty"`
+	CacheTTL     string `json:"cache_ttl,omitempty"`
+	CachePath    string `json:"cache_path,omitempty"`
+
+	// Crawl mode — set by `trawl crawl`. When CrawlMode is true, runJob
+	// uses BlockingNext, enqueues discovered children at depth+1, and
+	// terminates when the frontier reports quiescence. Batch and resume
+	// leave these zero and get the old drain-until-empty behavior.
+	CrawlMode       bool   `json:"crawl_mode,omitempty"`
+	CrawlMaxDepth   int    `json:"crawl_max_depth,omitempty"`
+	CrawlSameDomain bool   `json:"crawl_same_domain,omitempty"`
+	CrawlLimit      int    `json:"crawl_limit,omitempty"`
+	CrawlSeed       string `json:"crawl_seed,omitempty"`
 }
 
 // trawlRoot returns the top-level trawl state directory, honoring

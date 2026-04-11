@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/jeffdhooton/trawl/internal/cache"
 	"github.com/jeffdhooton/trawl/internal/engine"
 	"github.com/jeffdhooton/trawl/internal/tierlearn"
 	"github.com/jeffdhooton/trawl/internal/validity"
@@ -280,3 +281,123 @@ func TestRouteStalePreferenceFallsThrough(t *testing.T) {
 
 // Compile-time check that memCache satisfies the Cache interface.
 var _ tierlearn.Cache = (*memCache)(nil)
+
+// memContentCache is an in-memory cache.Cache for content-cache tests.
+type memContentCache struct {
+	entries map[string]*engine.Result
+	puts    int
+	gets    int
+}
+
+func newMemContentCache() *memContentCache {
+	return &memContentCache{entries: map[string]*engine.Result{}}
+}
+
+func (m *memContentCache) Get(url, tier string) (*engine.Result, bool) {
+	m.gets++
+	res, ok := m.entries[url+"|"+tier]
+	if !ok {
+		return nil, false
+	}
+	return res, true
+}
+
+func (m *memContentCache) Put(url, tier string, res *engine.Result) {
+	m.puts++
+	m.entries[url+"|"+tier] = res
+}
+
+func (m *memContentCache) Close() error { return nil }
+
+var _ cache.Cache = (*memContentCache)(nil)
+
+// TestRouteContentCacheHitSkipsFetch verifies that a pre-populated
+// content cache short-circuits the engine and never calls Fetch.
+func TestRouteContentCacheHitSkipsFetch(t *testing.T) {
+	httpE := &fakeEngine{name: "http"} // deliberately no result — would error
+	chromiumE := &fakeEngine{name: "chromium"}
+
+	cc := newMemContentCache()
+	cc.entries["https://example.com/|http"] = &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}
+
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithContentCache(cc)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatalf("cache hit should short-circuit, got %v", err)
+	}
+	if out.Tier != "http" {
+		t.Errorf("tier = %q, want http", out.Tier)
+	}
+	if !out.FromCache {
+		t.Error("outcome.FromCache = false, want true")
+	}
+	if httpE.calls != 0 {
+		t.Errorf("http engine was called despite cache hit, calls=%d", httpE.calls)
+	}
+	if cc.puts != 0 {
+		t.Errorf("cache Put called %d times on a hit — should be 0", cc.puts)
+	}
+}
+
+// TestRouteContentCacheMissPutsOnSuccess verifies that a successful live
+// fetch is written to the cache so the next request hits.
+func TestRouteContentCacheMissPutsOnSuccess(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+	chromiumE := &fakeEngine{name: "chromium"}
+
+	cc := newMemContentCache()
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithContentCache(cc)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.FromCache {
+		t.Error("miss path reported FromCache=true")
+	}
+	if cc.puts != 1 {
+		t.Errorf("cache Put called %d times, want 1", cc.puts)
+	}
+	if httpE.calls != 1 {
+		t.Errorf("http calls = %d, want 1", httpE.calls)
+	}
+}
+
+// TestRouteContentCacheInvalidEscalates verifies that a stale cached
+// stub that fails validity gets escalated past — the cache must not
+// trap the user in a bad response.
+func TestRouteContentCacheInvalidEscalates(t *testing.T) {
+	httpE := &fakeEngine{name: "http"} // would fail if called; cache must cover it
+	chromiumE := &fakeEngine{name: "chromium", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	cc := newMemContentCache()
+	// Seed the http entry with an SPA shell so validity escalates past it.
+	cc.entries["https://example.com/|http"] = &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: spaShell(),
+	}
+
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithContentCache(cc)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatalf("escalation past invalid cache entry should succeed, got %v", err)
+	}
+	if out.Tier != "chromium" {
+		t.Errorf("tier = %q, want chromium", out.Tier)
+	}
+	// The outcome's FromCache flag reflects whether the FINAL result came
+	// from the cache. Here chromium served the win, so it should be false.
+	if out.FromCache {
+		t.Error("FromCache = true but the winning tier was chromium")
+	}
+}
