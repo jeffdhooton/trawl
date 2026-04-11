@@ -260,7 +260,10 @@ objects with attribute extraction, and a real self-reference case.
 6. Example schema at `docs/examples/sep-article.yaml`, verified
    against a real plato.stanford.edu/entries/kant/ fetch during
    development (11 TOC entries, 24 related entries, author
-   "Michael Rohlf").
+   "Michael Rohlf"). **Validated against the full 1857-entry SEP
+   corpus on 2026-04-11** — 100% reach, 0 failures, 2h34m wall clock,
+   0 chromium escalations. See the v2 schema features bucket below
+   for the one real gap the production run surfaced.
 
 **What v1 does NOT do** (explicit non-goals, easy to extend when a
 real consumer asks):
@@ -273,6 +276,32 @@ real consumer asks):
 
 The `version: 1` field is mandatory so a future breaking change can
 ship without inventing a second schema format.
+
+#### v2 schema features (pending consumer signal)
+
+The SEP production run on 2026-04-11 surfaced exactly one real gap:
+authors in older/simpler entries are rendered as plain text rather
+than `<a href="http://...">`, so the `author` selector misses ~34%
+of the corpus (~635 of 1857 entries). The consumer backfilled offline
+with a regex script against the markdown body. That workaround is
+fine for one consumer but re-discovering it cold is a papercut.
+
+Two v2 schema extensions would eliminate the need:
+
+1. **Fallback selectors.** `selector: ["#primary", "#fallback"]`
+   returns the first selector that matches, or a list of selectors
+   with a declared primary and fallback shape. Maps directly to the
+   SEP case: primary = link-wrapped author, fallback = plain-text
+   after `<br/>`.
+2. **Transform step.** A post-extraction regex/trim/lowercase/split
+   pipeline on the extracted value. Would let a consumer express
+   "extract author from the copyright text with regex `by\s+(.+?)<`"
+   without a second script.
+
+Both are deferred until a SECOND consumer hits a similar gap — the
+SEP case alone is solvable with offline post-processing and the
+"ship when someone actually has the shape" rule that unblocked
+schema v1 still applies.
 
 ### Phase: CSV output — SHIPPED 2026-04-10
 
