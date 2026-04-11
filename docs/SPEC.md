@@ -47,7 +47,7 @@ It is built as a **standalone CLI + Go library**, with a thin gstack skill wrapp
 
 ### Non-Goals (v1)
 - **Distributed mode.** A single box with goroutines handles enormous workloads. Don't ship coordination until someone hits the wall.
-- **Browser-fingerprint stealth (uTLS, navigator.webdriver patches, etc.).** When a site fights back, route to Chromium and accept the cost. Stealth is a rabbit hole.
+- **Browser-fingerprint stealth (uTLS, navigator.webdriver patches, etc.).** When a site fights back, route to Chromium and accept the cost. Stealth is a rabbit hole. **(Revised 2026-04-11 — see [`docs/EVASION.md`](EVASION.md) for the principled tiered model that replaces this blanket exclusion.)**
 - **CAPTCHA solving.** Not our problem. Surface the failure and move on.
 - **A scraping DSL.** Go code + config files are enough. Don't invent a YAML programming language.
 - **Real-time scraping / streaming.** This is batch dataset collection, not a live feed.
@@ -503,8 +503,8 @@ If the build agent is tempted to add any of these in v1, **don't**:
 - A scheduler (cron + `trawl run` is enough)
 - Multi-tenant job isolation (single-user tool)
 - Plugin system / scripting language (Go code is the extension point)
-- Browser fingerprint stealth (rabbit hole)
-- CAPTCHA solving (out of scope)
+- Browser fingerprint stealth (rabbit hole) — **revised, see `docs/EVASION.md`**
+- CAPTCHA solving (out of scope) — **still out of scope, see `docs/EVASION.md` §6.1**
 - Distributed coordination (premature)
 - A query language for the output (jq exists, DuckDB exists)
 - Real-time/streaming dataset feeds (this is batch)

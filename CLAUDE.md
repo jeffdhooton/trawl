@@ -91,8 +91,11 @@ the next session must know" in `docs/DECISIONS.md`.
 - **Tech stack in SPEC §7 is decided.** If you strongly disagree,
   add a DECISIONS.md entry with data — don't silently swap.
 - **v1 exclusions in SPEC §13 are deliberate.** No web UI, no
-  scheduler, no plugin DSL, no stealth, no CAPTCHA solving, no
-  distributed mode.
+  scheduler, no plugin DSL, no CAPTCHA solving, no distributed
+  mode. (Note: the original `no stealth` exclusion was revised
+  2026-04-11 — stealth is now a tiered, opt-in feature set per
+  `docs/EVASION.md`. CAPTCHA solving is still refused; see
+  EVASION.md §6.1.)
 - **Correctness > speed.** A fast scraper that returns empty DOMs is
   worse than a slow one that returns content.
 - **Polite by default.** robots.txt, rate limits, concurrency caps
@@ -119,6 +122,7 @@ internal/version/       ldflags-settable version info
 docs/ROADMAP.md         current phase status (source of truth)
 docs/SPEC.md            original PRD — historical design intent
 docs/BENCHMARK.md       operational playbook + Lightpanda decision rule
+docs/EVASION.md         anti-detection / stealth design doc (tiered opt-in)
 docs/DECISIONS.md       architectural decision log
 docs/TODO.md            standing commitments + open papercuts
 docs/PROXIES.md         future P2 proxy planning (not yet committed in

@@ -239,6 +239,10 @@ See [`docs/examples/`](docs/examples/):
   that deviate from SPEC, each with the data that drove the decision.
 - [`docs/BENCHMARK.md`](docs/BENCHMARK.md) — operational playbook for
   running Phase 0 against the 7000-company test dataset.
+- [`docs/EVASION.md`](docs/EVASION.md) — anti-detection / stealth
+  design doc. Tiered opt-in model for sites that fight back, with
+  explicit refusals for CAPTCHA solvers, credential bypass, and
+  other identity-changing features.
 - [`docs/TODO.md`](docs/TODO.md) — standing commitments and open
   papercuts.
 
@@ -250,6 +254,16 @@ proxy rotation toolkit, not a distributed crawler. For the list of
 things deliberately kept out of scope — LLM-based extraction, search
 integration, interactive actions, webhooks, pricing-aware logic — see
 `docs/ROADMAP.md`'s "explicitly deferred or out of scope" section.
+
+**Trawl is also not a bypass tool.** For sites that actively fight
+back against automated traffic, trawl's design intent is a tiered
+opt-in evasion model (realistic browser headers, chromium stealth
+patches, optional TLS fingerprint forgery) with explicit refusals
+for CAPTCHA-solving services, credential-based auth bypass, and DoS-
+level rate patterns. See `docs/EVASION.md` for the considered stance
+— that doc locks in the principled shape before any of it ships, so
+the eventual implementation preserves trawl's polite-by-default
+identity rather than drifting into an arms-race tool.
 
 The Unix-pipeline answer for LLM extraction is: pipe `trawl scrape
 ... --format markdown` into whatever LLM tool you prefer. Trawl's job
