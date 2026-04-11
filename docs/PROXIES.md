@@ -2,7 +2,7 @@
 
 This doc covers everything trawl needs to know about HTTP/HTTPS proxies: the types, the providers, the rotation strategies, the gotchas, and the concrete shape of the trawl proxy config. Read this before implementing the `proxy:` job-config block.
 
-> Scope: this doc covers proxy *routing*. It deliberately does NOT cover TLS fingerprint mimicry (uTLS, curl-impersonate, JA3/JA4 spoofing) — see [`docs/EVASION.md`](EVASION.md) for the tiered opt-in model that handles those. Tier 4 of EVASION.md explicitly defers proxy rotation back here, so the two docs are meant to be read together: PROXIES.md covers "how to route through different IPs," EVASION.md covers "how to look like a real browser once the request goes out." See §7 of this doc for the in-line pointer at the TLS/fingerprint handoff.
+> Scope: this doc covers proxy *routing*. It deliberately does NOT cover TLS fingerprint mimicry (uTLS, curl-impersonate, JA3/JA4 spoofing) — that's a separate rabbit hole the spec excludes from v1. See §7 of this doc for what to do when proxies aren't enough.
 
 ---
 
@@ -248,9 +248,7 @@ The fixes are out of v1 scope, but for the build agent's awareness:
 - **`lwthiker/curl-impersonate`** — patched curl that produces real browser fingerprints. Useful for tier 1 if you're willing to shell out to a binary.
 - **Just escalate to Chromium.** A real Chromium browser produces a real Chromium fingerprint by definition. Slow but unbeatable.
 
-Trawl's v1 strategy: **don't ship fingerprint mimicry**. When tier 1 fails on suspected anti-bot, escalate to tier 3 (Chromium) and accept the cost.
-
-**Update (2026-04-11):** the "add fingerprint support in a future version" promise above is now concrete. See [`docs/EVASION.md`](EVASION.md) for the principled tiered model — Tier 1 (honest browser mimicry, behind `--browser-like`), Tier 2 (chromium stealth patches, behind `--stealth`), and Tier 3 (TLS fingerprint forgery via utls, behind `--tls-match chrome`). Each tier has a falsifiable decision rule gating when trawl will actually ship it. The proxy layer in this doc composes with those tiers — proxies for IP diversity, evasion tiers for per-request fingerprint. EVASION.md §5.4 explicitly defers proxy rotation back to PROXIES.md so the two documents have a clean handoff at Tier 4.
+Trawl's v1 strategy: **don't ship fingerprint mimicry**. When tier 1 fails on suspected anti-bot, escalate to tier 3 (Chromium) and accept the cost. Add fingerprint support in a future version if the data shows it's worth the complexity.
 
 ---
 
