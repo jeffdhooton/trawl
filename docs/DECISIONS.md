@@ -6,6 +6,183 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-10 — Feature batch: crawl, map, screenshots, cache, schema, CSV, retries, politeness
+
+**Decision:** Ship eight features in a single session as a Firecrawl
+parity pass and quality-of-life improvements, with specific non-obvious
+shape calls recorded here so future maintainers understand the
+semantics without re-reading the commits.
+
+**Context:** SPEC §13 deliberately excluded LLM extraction, webhooks,
+and a web UI — but left many smaller features unspecified. The
+ROADMAP's gap analysis against Firecrawl flagged seven of these as
+in-scope and small-to-medium cost. All were built in one session
+2026-04-10 and pushed as commits `112c713` and `b77d81d`. The phase
+writeups in `docs/ROADMAP.md` have the full detail; this entry
+captures the architectural calls that weren't otherwise obvious from
+the code.
+
+### Schema extraction (`--schema`) — v1 shape
+
+**Unblocking consumer:** Jeff's business partner scraping Stanford
+Encyclopedia of Philosophy articles via Firecrawl. SEP gave us a
+concrete, non-trivial schema shape (flat fields + arrays-of-objects
+with attribute extraction) to design against.
+
+**Design calls worth remembering:**
+
+1. **Empty selector = "self"** inside a nested `fields` context. The
+   SEP case proves this is necessary: every array-of-objects
+   extraction wants to grab text/attr from the iterated element
+   itself, not a child. Alternative syntaxes considered: `"."`,
+   `":self"`, `"&"` (Sass). Empty was picked because it's the least
+   noisy and parse-unambiguous. Top-level empty selectors are
+   rejected at Load time so the "self" meaning can't leak up.
+2. **Relative URLs stay relative.** `extracted.link = "../foo/"` in
+   the output, not `"https://host/foo/"`. Reason: SEP consumers need
+   to cheaply distinguish intra-encyclopedia links from external
+   ones. They already have `record.canonical_url` if they want to
+   resolve. What would change our minds: a concrete consumer that
+   needs absolute URLs by default AND whose consumers can't join
+   against canonical_url.
+3. **Missing matches are omitted from output**, not present as `""`
+   or `null`. Consumers can `jq 'select(.extracted.foo)'` to filter
+   on presence. Explicit `required` fields are v1-excluded —
+   silent omission is simpler and sufficient for known consumers.
+4. **`version: 1` is mandatory.** Future breaking changes can ship
+   without inventing a second format.
+
+### Content cache (`--cache`) — semantic subtleties
+
+1. **Opt-in, not opt-out.** A fresh `trawl scrape` must never
+   surprise the user with stale data from a week ago. Users who
+   want caching ask for it with `--cache`. What would change our
+   minds: a prominent-enough "served from cache" log line that
+   surprise is no longer a risk.
+2. **Key is `(canonical URL, tier name)`, not URL alone.** Different
+   tiers can produce different bodies for the same URL (HTTP vs
+   chromium), so a forced-tier re-run should miss the cache entry
+   that a different tier populated. Inside the router tier loop,
+   cache lookup happens per-tier before each Fetch.
+3. **Cached results still run through validity.** A stale stub
+   body in the cache escalates past exactly as if the live fetch
+   had returned it — the cache doesn't trap a user in bad content.
+4. **Puts only on successful LIVE fetches.** Cache-replay successes
+   are NOT re-put. The stored body's timestamp is fixed at the
+   moment of the original live fetch; a replay does not "refresh"
+   the TTL.
+5. **Tier-learning is NOT updated from cache hits.** The learning
+   signal is "what served this host LIVE." A single successful
+   replay shouldn't lock a host's tier preference.
+
+### HTTP retries (`--retries`) — scope boundaries
+
+1. **Network layer only.** Retries fire on connection-level
+   transients (timeouts, ECONNRESET/REFUSED, truncated EOF,
+   io.EOF at Client.Do, HTTP 429/502/503/504). They do NOT fire
+   on stub-body responses — those stay with the router's
+   validity → escalate path. A stub body is a successful fetch
+   from TCP's point of view; retrying it would waste budget on a
+   server that's serving exactly what it meant to.
+2. **Permanent failures return immediately**: ctx cancel/deadline,
+   TLS cert verification errors (`*tls.CertificateVerificationError`,
+   `x509.UnknownAuthorityError`, `x509.HostnameError`), all 4xx
+   except 429. No amount of retrying fixes an expired cert or a
+   404.
+3. **Chromium does NOT get retries in v1.** chromedp's timeout
+   model is different and chromium fetches fail much less often
+   from network transients (they fail from JS hangs and memory
+   pressure, which retries don't help). Keeping retries HTTP-only
+   means one reliable retry path instead of two partially-overlapping
+   ones. What would change our minds: a chromium-heavy workload
+   with measurable transient failures.
+4. **Exponential backoff with jitter, capped at 10s INCLUDING
+   jitter.** An earlier draft capped before applying ±25% jitter,
+   which meant the observed delay could exceed the cap by up to
+   25%. Fixed so "max 10s" means observed max is 10s.
+
+### CSV output (`-o results.csv`) — column strategy
+
+1. **Extension sniffing, no flag.** `.csv`/`.tsv` → CSV sink,
+   everything else (and stdout) → JSONL. This matches how most
+   Unix tools work and keeps the CLI simple.
+2. **Auto-discovered columns from the first record**, not from
+   the user's `--selector` list. Reason: a user running
+   `trawl batch --selector 'title=h1' --selector 'price=.price'
+   -o out.csv` expects `url, canonical_url, ..., title, price`
+   to "just work" without repeating themselves in `--csv-columns`.
+3. **Column set LOCKS at first write.** Later records with new
+   `extracted` keys silently drop those keys. No way to rewrite
+   the header once downstream tooling has read it, so we'd rather
+   be honest about the tradeoff than pretend we can stream-append.
+   `DroppedKeys()` tracks the skipped keys so a post-run summary
+   is possible.
+4. **Non-scalar values get JSON-encoded inline.** Ugly, but CSV
+   is single-valued per cell by definition. `jq` / pandas can
+   re-parse. The alternative — dropping non-scalar values silently
+   — would lose schema-extracted data without warning.
+5. **Dead-letter queue stays JSONL regardless of primary sink
+   format.** Benchmark scripts depend on its shape and nobody
+   wants a dead-letter CSV that drops half the fields.
+
+### Per-host politeness (`--politeness`) — match rules
+
+1. **Exact host OR `*.suffix` wildcard.** No regex. Regex is a
+   rabbit hole of "does this mean the whole string or a substring"
+   questions and the overwhelming majority of real overrides are
+   "slow-crawl this specific host" or "slow-crawl this TLD." What
+   would change our minds: a consumer with a legitimate need for
+   regex (not just a preference).
+2. **`*.suffix` does NOT match the bare TLD.** `*.gov` matches
+   `irs.gov` but not `gov`. This is the Python `fnmatch` "at least
+   one label" rule.
+3. **Rate AND concurrency overridable, burst stays global.** Burst
+   matters less than sustained rate for polite crawling, and
+   per-host burst adds a third knob to reason about.
+4. **First-match-wins, top-to-bottom.** Users put specific rules
+   before catch-alls. Alphabetical sorting would be less
+   predictable.
+5. **Loaded once at command start.** File changes mid-run don't
+   take effect — restart the crawl. Runtime reload would be a lot
+   of plumbing for a feature nobody has asked for.
+
+### BFS crawl (`trawl crawl`) — termination protocol
+
+Worth recording because `sync.Cond`-based worker pools are subtle:
+
+- **`BlockingNext` signals `ErrEmpty` only when queue is empty AND
+  `inFlight == 0`.** Either condition alone isn't enough — an
+  empty queue with workers still processing could yield new
+  children any moment.
+- **`inFlight` is an in-memory counter**, not derived from
+  `StateInFlight` in the frontier DB. It's reconstructed as zero
+  on startup because `Recover` drains all in_flight records back
+  to queued before workers spin up.
+- **Link discovery happens BEFORE `MarkDone`.** If the order were
+  reversed, a sibling worker could wake on the empty-queue
+  broadcast, see `inFlight == 0`, and terminate the crawl
+  prematurely — right before the children get enqueued.
+- **`limit` caps URLs ENQUEUED, not fetched.** Deterministic from
+  the frontier's natural unit. Dedup-rejected children release
+  their budget slot so a cycle-heavy graph doesn't burn the limit
+  on duplicates.
+
+### What did NOT change
+
+- No new measurement data on Lightpanda. The rule in the previous
+  entry still stands; none of these features unblock its reopening.
+  BFS crawl shipped, but nobody has re-run Phase 0 against the
+  richer selector library yet.
+- No changes to the existing tier router, politeness default
+  rates, or URL canonicalization rules.
+- SPEC §13 exclusions (LLM extract, search, webhooks, web UI,
+  scheduler, distributed mode) all still stand.
+
+**Authored during session:** 2026-04-10.
+**Commit references:** `112c713` (five phases), `b77d81d` (three-feature batch).
+
+---
+
 ## 2026-04-10 — Defer Lightpanda pending better data
 
 **Decision:** Skip building the Lightpanda engine for now. Ship the

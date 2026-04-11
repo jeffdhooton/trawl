@@ -1,8 +1,19 @@
 # Trawl — Intelligent Tiered Web Scraping Tool
 
-**Status:** Spec / PRD draft
-**Audience:** Fresh Claude Code instance building this from scratch
-**Working name:** `trawl` (alternatives: `forage`, `harvest`, `dredge`, `gather`. Pick one and commit before writing code.)
+**Status:** Original PRD — historical design intent.
+**For current shipped state and phase status**, see [`docs/ROADMAP.md`](ROADMAP.md).
+**For architectural decisions that deviate from this spec**, see [`docs/DECISIONS.md`](DECISIONS.md).
+**Audience:** Fresh Claude Code instance building this from scratch (and future readers who want to know why the original design looked this way).
+**Working name:** `trawl`
+
+> This document is the original pitch + PRD, captured before any code
+> was written. It is kept largely intact as historical reference for
+> *why* trawl exists and what its original shape was. Individual
+> architectural calls have evolved (Lightpanda was deferred, schema
+> extraction shipped as YAML rather than bespoke syntax, etc.); those
+> evolutions live in `docs/DECISIONS.md`. The build-phase checklists
+> in §10 below reflect the original plan, not what's actually
+> shipped — `docs/ROADMAP.md` has the live phase status.
 
 ---
 

@@ -1,8 +1,9 @@
 # CLAUDE.md — trawl
 
-Working notes for Claude Code sessions on this repo. Keep it short; the
-real spec lives in `docs/SPEC.md` and the live decision log in
-`docs/DECISIONS.md`.
+Working notes for Claude Code sessions on this repo. Keep it short;
+`docs/ROADMAP.md` has the live phase status, `docs/SPEC.md` is the
+original PRD, and `docs/DECISIONS.md` is the architectural decision
+log.
 
 ## What this is
 
@@ -107,21 +108,22 @@ internal/engine/        HTTP + Chromium engines, Engine interface (Request.WantS
 internal/extract/       goquery CSS extractor + FirstLink / AllLinks resolvers
 internal/failure/       Classify() — maps errors to discrete categories
 internal/frontier/      BadgerDB-backed URL queue (blocking Next for crawl)
-internal/output/        JSONL sink + Record type
-internal/politeness/    robots.txt cache + per-domain rate/concurrency
+internal/output/        JSONL + CSV/TSV sinks, Record type, NewFile dispatcher
+internal/politeness/    robots.txt cache + per-domain rate/concurrency + per-host HostRules
 internal/router/        tiered escalation loop (w/ content cache hook)
 internal/schema/        YAML/JSON schema → nested structured extraction
 internal/sitemap/       sitemap.xml discovery + index recursion + gzip
 internal/stats/         per-job stats.json aggregator
 internal/validity/      heuristics for "did this page actually load"
 internal/version/       ldflags-settable version info
-docs/SPEC.md            the PRD
+docs/ROADMAP.md         current phase status (source of truth)
+docs/SPEC.md            original PRD — historical design intent
 docs/BENCHMARK.md       operational playbook + Lightpanda decision rule
 docs/DECISIONS.md       architectural decision log
 docs/TODO.md            standing commitments + open papercuts
 docs/PROXIES.md         future P2 proxy planning (not yet committed in
                         all sessions — owned by Jeff, leave untouched)
-docs/examples/          shippable example schemas (sep-article.yaml)
+docs/examples/          shippable schemas + configs (sep-article.yaml, politeness.yaml)
 seed/                   benchmark test data (owned by Jeff, untouched)
 ```
 

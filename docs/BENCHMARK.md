@@ -91,10 +91,15 @@ Don't run all 7065 on day one. Build confidence in stages.
 ```bash
 head -101 seed/companies.csv > /tmp/smoke.csv
 trawl batch /tmp/smoke.csv \
-  --extract-yaml extract/pricing.yaml \
+  --url-column pricing_url \
+  --schema extract/pricing.yaml \
   --output runs/smoke.jsonl \
   --concurrency 20
 ```
+
+(If you haven't built a schema yet, `--selector 'title=h1' --selector
+'price=.price'` is a zero-config fallback that still exercises the
+pipeline end-to-end.)
 
 **Pass criteria:**
 - ≥80% return *any* extraction (low bar — proves the pipeline runs)
@@ -111,7 +116,8 @@ The connor11528 subset is from 2019. Expect 15-25% dead, parked, or redirected.
 ```bash
 grep ',connor11528,' seed/companies.csv > /tmp/rot.csv
 trawl batch /tmp/rot.csv \
-  --extract-yaml extract/pricing.yaml \
+  --url-column pricing_url \
+  --schema extract/pricing.yaml \
   --output runs/rot.jsonl
 ```
 
@@ -128,10 +134,16 @@ The real benchmark.
 
 ```bash
 trawl batch seed/companies.csv \
-  --extract-yaml extract/pricing.yaml \
-  --output runs/full.jsonl \
-  --metrics-port 9090
+  --url-column pricing_url \
+  --fallback-column homepage \
+  --fallback-selector 'a[href*="pricing"], a[href*="/plans"], a[href*="/price"]' \
+  --schema extract/pricing.yaml \
+  --politeness docs/examples/politeness.yaml \
+  --output runs/full.jsonl
 ```
+
+(Prometheus metrics endpoint is deferred to P2 per `docs/ROADMAP.md`.
+Use `stats.json` in the job dir for run-end aggregates.)
 
 **Success criteria** (from `docs/SPEC.md` §11):
 
@@ -148,7 +160,8 @@ trawl batch seed/companies.csv \
 
 ```bash
 trawl batch seed/companies.csv \
-  --extract-yaml extract/pricing.yaml \
+  --url-column pricing_url \
+  --schema extract/pricing.yaml \
   --force-tier chromium \
   --output runs/chromium-only.jsonl
 ```

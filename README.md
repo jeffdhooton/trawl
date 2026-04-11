@@ -3,8 +3,8 @@
 **Intelligent tiered web scraping.** A single Go binary that routes each
 URL through the cheapest engine that returns valid content, remembers
 which tier worked per host, persists the frontier so long crawls
-survive crashes, and produces clean markdown + metadata ready for
-downstream pipelines.
+survive crashes, and produces clean markdown + structured extraction
+ready for downstream pipelines.
 
 No API key. No runtime dependency. No Docker required. `go install` and
 you're done.
@@ -17,12 +17,34 @@ you're done.
 # One URL, clean markdown out, page metadata auto-extracted
 trawl scrape https://linear.app --format markdown --readability
 
-# Batch of URLs from a file, resumable
-trawl batch urls.txt --selector "title=h1" --selector "price=.price" \
-  --output results.jsonl
+# Batch of URLs from a file, resumable, CSV output
+trawl batch urls.txt \
+  --selector "title=h1" --selector "price=.price" \
+  --output results.csv
 
-# Discover URLs from a site's sitemap(s)
-trawl sitemap https://stripe.com > stripe-urls.txt
+# BFS-crawl an entire site, clean markdown from every page
+trawl crawl https://example.com \
+  --depth 2 --same-domain --limit 500 \
+  --format markdown --readability \
+  --output site.jsonl
+
+# Enumerate every URL a site publishes (sitemap + HTML-crawl, deduped)
+trawl map https://example.com > urls.txt
+trawl batch urls.txt --output results.jsonl
+
+# Structured extraction via YAML schema (nested fields, arrays of objects)
+trawl scrape https://plato.stanford.edu/entries/kant/ \
+  --schema docs/examples/sep-article.yaml \
+  --format markdown --readability
+
+# Iterate on selectors cheaply: opt-in content cache, 24h TTL
+trawl batch urls.txt --selector "title=h1" --cache -o results.jsonl
+
+# Full-page PNG screenshots for chromium-served pages
+trawl scrape https://linear.app --tiers chromium --screenshot-dir shots/
+
+# Per-host politeness: slow-crawl SEP, normal speed elsewhere
+trawl batch mixed-urls.txt --politeness docs/examples/politeness.yaml
 
 # CSV with hybrid discovery: try pricing_url first, fall back to
 # homepage + link follow on http_4xx / dns_failure
@@ -55,9 +77,14 @@ suitable for copying onto a $5 VPS.
 ## What it does
 
 - **Tiered routing.** Each URL starts at HTTP (`net/http` + `goquery`);
-  if the response is unvalid (SPA shell, timeout, etc.) the router
+  if the response is invalid (SPA shell, timeout, etc.) the router
   escalates to Chromium (`chromedp`). Invalid-final responses (404,
   DNS failure) short-circuit — chromium can't help there either.
+- **HTTP retries with backoff.** Transient failures (429, 5xx, connection
+  resets, timeouts) retry automatically with exponential backoff and
+  ±25% jitter, capped at 10s. Permanent failures (4xx except 429, TLS
+  cert errors, ctx cancellation) return immediately. `--retries` and
+  `--retry-delay` tune the policy; chromium does not retry in v1.
 - **Persistent frontier.** BadgerDB-backed queue survives SIGINT, machine
   restarts, and mid-crawl crashes. `trawl resume <job-id>` picks up
   where it left off.
@@ -65,11 +92,38 @@ suitable for copying onto a $5 VPS.
   served each host successfully. Subsequent crawls skip the HTTP tier
   on known-SPA hosts, saving wasted work. Cache lives at
   `$TRAWL_HOME/tier-cache` and is cross-job by design.
+- **BFS crawl mode.** `trawl crawl <seed> --depth N --same-domain
+  --limit N` walks a site breadth-first, respecting a depth cap and a
+  hard cap on URLs enqueued. Link discovery uses the same tiered
+  pipeline as scrape, so SPA pages get chromium-rendered before their
+  links are extracted. Composes with `--format markdown` to become
+  "give me clean content from an entire site."
+- **URL mapping.** `trawl map <url>` combines sitemap parsing with
+  lightweight HTML link discovery (HTTP tier only) to produce a
+  deduped list of URLs to stdout. Fast, composable with `trawl batch`.
 - **Content extraction.** `--format markdown` runs an HTML→markdown
   converter; `--readability` strips nav/footer/ads before conversion
   (or before CSS extraction). Every record gets automatic page
   metadata: title, description, canonical URL, language, Open Graph,
   Twitter cards, JSON-LD structured data, published date.
+- **Schema extraction.** `--schema sep-article.yaml` runs a nested,
+  declarative extraction against the page. Supports `selector`, `attr`,
+  `multiple` (arrays of strings or objects), and empty-selector
+  self-reference inside nested contexts (needed for "array of objects
+  where each object is a link's text + href"). YAML or JSON, strict
+  parser catches typos. See `docs/examples/sep-article.yaml` for a
+  working Stanford Encyclopedia of Philosophy schema.
+- **Screenshots.** `--screenshot-dir dir/` captures a full-page PNG
+  for every chromium-served row via chromedp's `captureBeyondViewport`.
+  Deterministic filenames (`<sha256-of-url>.png`) so re-runs overwrite
+  rather than accumulate. HTTP-served rows leave `metadata.screenshot_path`
+  empty — zero cost on the happy path.
+- **Content cache.** `--cache` opts into a persistent content cache
+  keyed by canonical URL + tier. A cache hit short-circuits the tier
+  loop without touching the live site. Default TTL 24h (tunable via
+  `--cache-ttl`). `metadata.from_cache: true` on replay rows so
+  downstream can distinguish live from cached. Lives at
+  `$TRAWL_HOME/content-cache`.
 - **Hybrid discovery.** CSV seeds can declare a primary URL and a
   fallback URL per row. When the primary fails with `http_4xx` or
   `dns_failure`, trawl re-routes through the fallback URL + a CSS
@@ -80,8 +134,16 @@ suitable for copying onto a $5 VPS.
   recursively walks `<sitemapindex>` files, handles gzip, dedupes
   URLs — stream-friendly for large sites.
 - **Polite by default.** robots.txt, per-domain rate limits, and
-  concurrency caps are opt-out, not opt-in. `--ignore-robots` exists
-  but logs a warning.
+  concurrency caps are opt-out, not opt-in. `--politeness <file.yaml>`
+  overrides rate and concurrency for specific hosts via exact or
+  `*.suffix` wildcard match (see `docs/examples/politeness.yaml`).
+  `--ignore-robots` exists but logs a warning.
+- **CSV / TSV output.** Extension-sniffed: `-o results.csv` or
+  `-o results.tsv` writes flattened rows instead of JSONL. Default
+  columns are a stable base set plus auto-discovered `extracted.*`
+  keys from the first record; `--csv-columns` overrides with explicit
+  dot-paths. Nested values get JSON-encoded inline so cells stay
+  single-valued.
 - **Failure classification + stats.** Every job emits a `stats.json`
   with reachable/unreachable counts, per-category failure breakdown,
   per-tier latency, chromium escalation rate, and fallback yield.
@@ -90,17 +152,19 @@ suitable for copying onto a $5 VPS.
 
 | Command         | What it does                                               |
 | --------------- | ---------------------------------------------------------- |
-| `trawl scrape`  | Scrape one URL, emit one JSONL record                      |
+| `trawl scrape`  | Scrape one URL, emit one record                            |
 | `trawl batch`   | Scrape a URL list (plain text, CSV, or TSV), resumable     |
+| `trawl crawl`   | BFS-crawl a site from a seed URL                           |
+| `trawl map`     | Enumerate URLs from a site (sitemap + HTML crawl)          |
+| `trawl sitemap` | Discover URLs from a site's sitemap(s) only                |
 | `trawl resume`  | Resume an interrupted job by ID                            |
-| `trawl sitemap` | Discover URLs from a site's sitemap(s)                     |
 | `trawl version` | Print version info                                         |
 
 Run `trawl <command> --help` for the full flag surface.
 
 ## Output shape
 
-Every record is one line of JSONL. The stable fields:
+Every record is one line of JSONL (or one CSV row). The stable fields:
 
 ```json
 {
@@ -111,13 +175,21 @@ Every record is one line of JSONL. The stable fields:
   "status_code": 200,
   "duration_ms": 384,
   "content_hash": "sha256:...",
-  "extracted": { "title": "...", "price": "..." },
+  "extracted": {
+    "title": "...",
+    "plans": [
+      { "name": "Free", "price": "$0" },
+      { "name": "Plus", "price": "$10" }
+    ]
+  },
   "body": "# Pricing\n\n...",
   "body_format": "markdown",
   "metadata": {
     "content_type": "text/html; charset=utf-8",
     "body_bytes": 24815,
     "final_url": "https://example.com/pricing",
+    "screenshot_path": "/tmp/shots/<sha256>.png",
+    "from_cache": false,
     "page": {
       "title": "...",
       "description": "...",
@@ -132,18 +204,37 @@ Every record is one line of JSONL. The stable fields:
 }
 ```
 
-`body` and `body_format` are only populated when `--format` is
-explicitly set. `metadata.page` is populated unless `--no-metadata`.
+Which fields are populated:
+
+- `body` / `body_format` only when `--format` is set.
+- `extracted` when `--selector` and/or `--schema` ran successfully.
+- `metadata.page` unless `--no-metadata`.
+- `metadata.screenshot_path` only when `--screenshot-dir` is set AND the
+  chromium engine served the row.
+- `metadata.from_cache: true` only on cache replay rows.
+
 Failed records still get written, with `failure_category` set to one
 of the classified buckets (`http_4xx`, `dns_failure`, `tls_error`,
 `spa_shell`, etc.) — easy to `jq`-filter for the real failures.
+
+## Example schemas and configs
+
+See [`docs/examples/`](docs/examples/):
+
+- [`sep-article.yaml`](docs/examples/sep-article.yaml) — nested schema
+  for Stanford Encyclopedia of Philosophy entries (title, pubinfo,
+  TOC, related entries, author, copyright). Verified against real
+  `plato.stanford.edu/entries/kant/` during development.
+- [`politeness.yaml`](docs/examples/politeness.yaml) — per-host rate
+  and concurrency overrides with exact and `*.suffix` wildcard match.
 
 ## Design docs
 
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — current phase, strategic gap
   analysis, in-scope/out-of-scope list. Start here.
 - [`docs/SPEC.md`](docs/SPEC.md) — the original PRD. Architecture,
-  non-goals, technology choices. Canonical design reference.
+  non-goals, technology choices. Historical design reference;
+  ROADMAP is the live source of truth.
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — log of architectural calls
   that deviate from SPEC, each with the data that drove the decision.
 - [`docs/BENCHMARK.md`](docs/BENCHMARK.md) — operational playbook for
