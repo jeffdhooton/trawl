@@ -35,15 +35,25 @@ inside the tier loop, stamps `metadata.from_cache`), schema
 extraction (`--schema <file.yaml|.json>`, `internal/schema` package,
 nested selector/attr/multiple with empty-selector self-ref for
 array-of-objects, example at `docs/examples/sep-article.yaml`
-verified against plato.stanford.edu/entries/kant/).
+verified against plato.stanford.edu/entries/kant/),
+CSV/TSV output (`internal/output/csv.go`, extension-sniffed via
+`NewFile`, `--csv-columns` with dot-path lookups, auto-discovered
+extracted keys from first record),
+HTTP retries with backoff (`HTTPConfig.MaxRetries` + `RetryBaseDelay`,
+retryables: net transients + 429/502/503/504; permanent: TLS/ctx/4xx
+except 429. Exponential ±25% jitter capped at 10s),
+per-host politeness (`internal/politeness/hostrules.go`, YAML rule
+file via `--politeness`, exact + `*.suffix` match, overrides rate
+and concurrency, example at `docs/examples/politeness.yaml`).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
 **Deferred:** Lightpanda — see DECISIONS.md for the decision rule
 and the three data points (11.4% → 4.4% → 14.08% escalation).
 
-**Current direction:** Open — the Firecrawl parity batch (BFS, map,
-screenshot, cache, schema extract) is complete. See `docs/ROADMAP.md`
-for remaining deferred items.
+**Current direction:** Open — eight phases shipped on 2026-04-10
+(BFS, URL map, screenshot, content cache, schema extract, CSV output,
+HTTP retries, per-host politeness). See `docs/ROADMAP.md` for the
+remaining deferred items.
 
 ## Read these first
 

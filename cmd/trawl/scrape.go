@@ -42,6 +42,10 @@ type scrapeOpts struct {
 	cacheTTL       time.Duration
 	cachePath      string
 	schemaPath     string
+	csvColumns     []string
+	retries        int
+	retryDelay     time.Duration
+	politenessPath string
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -97,6 +101,16 @@ Use --selector name=css multiple times to extract structured fields:
 		"override the default content-cache directory ($TRAWL_HOME/content-cache)")
 	cmd.Flags().StringVar(&opts.schemaPath, "schema", "",
 		"YAML/JSON schema file for structured extraction (see docs/examples/)")
+	cmd.Flags().StringSliceVar(&opts.csvColumns, "csv-columns", nil,
+		"comma-separated columns for CSV output (dot-paths like extracted.title). "+
+			"Only valid when -o ends in .csv or .tsv. If unset, base columns plus "+
+			"auto-discovered extracted.* keys from the first record are used.")
+	cmd.Flags().IntVar(&opts.retries, "retries", 2,
+		"max retry attempts for transient HTTP failures (429, 5xx, connection errors). 0 disables retries.")
+	cmd.Flags().DurationVar(&opts.retryDelay, "retry-delay", 500*time.Millisecond,
+		"base delay for exponential backoff between retries (±25% jitter, capped at 10s)")
+	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
+		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
 
 	return cmd
 }
@@ -115,7 +129,10 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		return err
 	}
 
-	sink, err := output.NewJSONLFile(opts.outputPath)
+	if len(opts.csvColumns) > 0 && !output.IsCSVPath(opts.outputPath) {
+		return fmt.Errorf("--csv-columns is only valid with a .csv or .tsv output path")
+	}
+	sink, err := output.NewFile(opts.outputPath, opts.csvColumns)
 	if err != nil {
 		return err
 	}
@@ -123,6 +140,10 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 
 	httpCfg := engine.DefaultHTTPConfig()
 	httpCfg.Timeout = opts.timeout
+	httpCfg.MaxRetries = opts.retries
+	if opts.retryDelay > 0 {
+		httpCfg.RetryBaseDelay = opts.retryDelay
+	}
 	tiers := parseTierList(opts.tiers)
 	if len(tiers) == 0 && opts.forceTier == "" {
 		tiers = []string{"http", "chromium"}
@@ -151,6 +172,14 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	gateCfg.UserAgent = httpCfg.UserAgent
 	gateCfg.IgnoreRobots = opts.ignoreRobots
 	gate := politeness.NewGate(gateCfg, nil)
+	if opts.politenessPath != "" {
+		hr, err := politeness.LoadHostRules(opts.politenessPath)
+		if err != nil {
+			return fmt.Errorf("load politeness rules: %w", err)
+		}
+		gate.WithHostRules(hr)
+		log.Info().Str("politeness", opts.politenessPath).Int("rules", len(hr.Hosts)).Msg("per-host politeness rules loaded")
+	}
 
 	if opts.ignoreRobots {
 		log.Warn().Str("url", canonURL).Msg("robots.txt is being ignored")

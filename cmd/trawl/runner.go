@@ -90,16 +90,19 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		log.Info().Int("recovered", recovered).Msg("requeued in-flight URLs from previous run")
 	}
 
-	sink, err := output.NewJSONLFile(cfg.OutputPath)
+	if len(cfg.CSVColumns) > 0 && !output.IsCSVPath(cfg.OutputPath) {
+		return fmt.Errorf("--csv-columns is only valid with a .csv or .tsv output path")
+	}
+	sink, err := output.NewFile(cfg.OutputPath, cfg.CSVColumns)
 	if err != nil {
 		return fmt.Errorf("open output: %w", err)
 	}
 	defer sink.Close()
 
-	// Dead-letter queue: a strict subset of results.jsonl containing only
-	// unreachable records (DNS / TLS / 4xx / 5xx / etc). Makes it cheap for
-	// benchmark scripts to exclude dead rows from denominators without
-	// re-filtering the full results file.
+	// Dead-letter queue: a strict subset of the primary sink's content —
+	// unreachable records (DNS / TLS / 4xx / 5xx / etc). Stays JSONL
+	// regardless of the primary sink format because benchmark scripts
+	// depend on the shape and nobody wants a dead-letter .csv.
 	deadLetterPath := filepath.Join(jobDir, "dead_letter.jsonl")
 	deadLetter, err := output.NewJSONLFile(deadLetterPath)
 	if err != nil {
@@ -109,6 +112,10 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 
 	httpCfg := engine.DefaultHTTPConfig()
 	httpCfg.Timeout = cfg.timeoutDuration()
+	httpCfg.MaxRetries = cfg.Retries
+	if d := cfg.retryDelayDuration(); d > 0 {
+		httpCfg.RetryBaseDelay = d
+	}
 
 	r, err := buildRouter(cfg.tierList(), cfg.ForceTier, httpCfg)
 	if err != nil {
@@ -151,6 +158,17 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	}
 	gateCfg.MaxConcurrentGlobal = cfg.Concurrency
 	gate := politeness.NewGate(gateCfg, nil)
+	if cfg.PolitenessPath != "" {
+		hr, err := politeness.LoadHostRules(cfg.PolitenessPath)
+		if err != nil {
+			return fmt.Errorf("load politeness rules: %w", err)
+		}
+		gate.WithHostRules(hr)
+		log.Info().
+			Str("politeness", cfg.PolitenessPath).
+			Int("rules", len(hr.Hosts)).
+			Msg("per-host politeness rules loaded")
+	}
 
 	if cfg.IgnoreRobots {
 		log.Warn().Msg("robots.txt is being ignored for this job")

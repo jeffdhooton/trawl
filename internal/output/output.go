@@ -4,6 +4,7 @@ package output
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/jeffdhooton/trawl/internal/extract"
@@ -85,4 +86,28 @@ type Sink interface {
 // MarshalLine returns the JSONL-encoded form of a record (no trailing newline).
 func MarshalLine(r Record) ([]byte, error) {
 	return json.Marshal(r)
+}
+
+// NewFile is the high-level constructor that picks a sink based on
+// the output path's extension: .csv → CSV with comma separator,
+// .tsv → CSV with tab separator, everything else (and stdout) → JSONL.
+// csvColumns is ignored for non-CSV paths; callers are expected to
+// validate "csv columns set but output is JSONL" upstream so the
+// error message can reference the user's actual flag.
+func NewFile(path string, csvColumns []string) (Sink, error) {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".csv"), strings.HasSuffix(lower, ".tsv"):
+		return NewCSVFile(path, csvColumns)
+	default:
+		return NewJSONLFile(path)
+	}
+}
+
+// IsCSVPath reports whether a given path would be written as CSV/TSV
+// by NewFile. Callers use this to validate that --csv-columns is only
+// set when the output path is actually a CSV file.
+func IsCSVPath(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".csv") || strings.HasSuffix(lower, ".tsv")
 }

@@ -22,17 +22,18 @@ import (
 )
 
 type mapOpts struct {
-	sources      string
-	depth        int
-	sameDomain   bool
-	limit        int
-	timeout      time.Duration
-	outputPath   string
-	verbose      bool
-	ignoreRobots bool
-	concurrency  int
-	ratePerSec   float64
-	sitemapMax   int
+	sources        string
+	depth          int
+	sameDomain     bool
+	limit          int
+	timeout        time.Duration
+	outputPath     string
+	verbose        bool
+	ignoreRobots   bool
+	concurrency    int
+	ratePerSec     float64
+	sitemapMax     int
+	politenessPath string
 }
 
 func newMapCmd() *cobra.Command {
@@ -87,6 +88,8 @@ the gaps.`,
 		"requests per second per domain for the crawl source")
 	cmd.Flags().IntVar(&opts.sitemapMax, "sitemap-max", 50000,
 		"cap total URLs pulled from sitemaps (0 = unlimited)")
+	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
+		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
 
 	return cmd
 }
@@ -235,6 +238,17 @@ func runMapCrawl(ctx context.Context, seed string, opts mapOpts, emit func(strin
 		gateCfg.MaxConcurrentGlobal = opts.concurrency
 	}
 	gate := politeness.NewGate(gateCfg, nil)
+	if opts.politenessPath != "" {
+		hr, err := politeness.LoadHostRules(opts.politenessPath)
+		if err != nil {
+			return fmt.Errorf("load politeness rules: %w", err)
+		}
+		gate.WithHostRules(hr)
+		log.Info().
+			Str("politeness", opts.politenessPath).
+			Int("rules", len(hr.Hosts)).
+			Msg("per-host politeness rules loaded for map crawl")
+	}
 
 	if opts.ignoreRobots {
 		log.Warn().Msg("robots.txt is being ignored for the map crawl source")

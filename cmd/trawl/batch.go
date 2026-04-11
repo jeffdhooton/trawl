@@ -37,6 +37,10 @@ type batchOpts struct {
 	cacheTTL         time.Duration
 	cachePath        string
 	schemaPath       string
+	csvColumns       []string
+	retries          int
+	retryDelay       time.Duration
+	politenessPath   string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -102,6 +106,15 @@ gracefully and prints a resume command.`,
 		"override the default content-cache directory ($TRAWL_HOME/content-cache)")
 	cmd.Flags().StringVar(&opts.schemaPath, "schema", "",
 		"YAML/JSON schema file for structured extraction (see docs/examples/)")
+	cmd.Flags().StringSliceVar(&opts.csvColumns, "csv-columns", nil,
+		"comma-separated columns for CSV output (dot-paths like extracted.title). "+
+			"Only valid when -o ends in .csv or .tsv.")
+	cmd.Flags().IntVar(&opts.retries, "retries", 2,
+		"max retry attempts for transient HTTP failures (429, 5xx, connection errors). 0 disables retries.")
+	cmd.Flags().DurationVar(&opts.retryDelay, "retry-delay", 500*time.Millisecond,
+		"base delay for exponential backoff between retries (±25% jitter, capped at 10s)")
+	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
+		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
 
 	return cmd
 }
@@ -160,6 +173,10 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		CacheTTL:         opts.cacheTTL.String(),
 		CachePath:        opts.cachePath,
 		SchemaPath:       opts.schemaPath,
+		CSVColumns:       opts.csvColumns,
+		Retries:          opts.retries,
+		RetryDelay:       opts.retryDelay.String(),
+		PolitenessPath:   opts.politenessPath,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

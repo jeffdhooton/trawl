@@ -1,6 +1,6 @@
 # trawl — roadmap
 
-**Current phase:** Open — BFS, map, screenshot, content cache, schema extraction all shipped 2026-04-10
+**Current phase:** Open — eight phases shipped 2026-04-10 (BFS, map, screenshot, cache, schema, CSV output, HTTP retries, per-host politeness)
 **Last updated:** 2026-04-10
 
 This doc is the single source of truth for "what's next and why." The
@@ -61,6 +61,9 @@ against trawl's current state, scope judgment, and rough cost.
 | Screenshot output                                  | ❌           | yes      | small   |
 | Screenshot output                                  | ✅           | yes      | small   |
 | Schema-based structured extraction (JSON/YAML)     | ✅           | yes      | medium  |
+| CSV / TSV output                                   | ✅           | yes      | small   |
+| HTTP retries with backoff                          | ✅           | yes      | small   |
+| Per-host politeness overrides                      | ✅           | yes      | small   |
 | Interactive actions (click, scroll, wait, execJS)  | ❌           | debatable | large |
 | LLM extraction                                     | ❌           | **no**   | —       |
 | Proxy rotation as a core feature                   | ❌           | P2 only  | large   |
@@ -270,6 +273,93 @@ real consumer asks):
 
 The `version: 1` field is mandatory so a future breaking change can
 ship without inventing a second schema format.
+
+### Phase: CSV output — SHIPPED 2026-04-10
+
+Originally off-roadmap; `internal/output/output.go` carried a comment
+noting "P0 ships JSONL; CSV/Parquet/SQLite land in P1/P2." Landed as
+part of a three-feature batch (CSV, HTTP retries, per-host politeness)
+because all three were small, complementary quality-of-life wins.
+
+**What landed:**
+1. New `internal/output/csv.go` implementing the `Sink` interface.
+   Streaming writes, one CSV row per record. `.tsv` paths get tab
+   delimiters via path sniffing so users can change the separator
+   by renaming the output file.
+2. `output.NewFile(path, columns)` dispatcher picks CSV or JSONL by
+   extension. `.csv`/`.tsv` → CSV, everything else (and stdout) →
+   JSONL. Dead-letter queue stays JSONL regardless of the primary
+   sink format because benchmark scripts depend on its shape.
+3. **Column resolution**: explicit `--csv-columns col1,col2.nested`
+   wins verbatim. When unset, a base set (`url, canonical_url, tier,
+   status_code, duration_ms, content_type, failure_category, error`)
+   is augmented with every top-level key from the first record's
+   `extracted` map. Column set LOCKS at the first write — records
+   that later introduce new `extracted` keys have those keys
+   silently dropped (with a debug log via `DroppedKeys()`).
+4. **Flattening** via JSON round-trip: each record is marshaled to
+   `map[string]any` then walked with dot-paths. Non-scalar values
+   (arrays, maps from schemas) are JSON-encoded inline so CSV cells
+   stay single-valued — ugly but honest about CSV's limitations.
+5. `--csv-columns` on scrape/batch/crawl. Validation error if set
+   when the output path is not `.csv`/`.tsv`.
+
+### Phase: HTTP retries with backoff — SHIPPED 2026-04-10
+
+Off-roadmap before this batch. Classic papercut for long batches: a
+transient 503 or connection reset cost the whole row because the
+HTTP tier only tried once. Now retries happen inside the engine.
+
+**What landed:**
+1. `HTTPConfig` gained `MaxRetries` (default 2 = 3 total attempts)
+   and `RetryBaseDelay` (default 500ms). `HTTP.Fetch` wraps a
+   refactored `fetchOnce` in a retry loop.
+2. **Retry classification** (`isRetryableError` / `isRetryableStatus`):
+   network transients retry (timeouts, ECONNRESET, ECONNREFUSED,
+   ENETUNREACH, EHOSTUNREACH, io.EOF on Client.Do, net.ErrClosed,
+   any wrapped `*net.OpError`). HTTP status codes 429, 502, 503, 504
+   retry. Permanent errors return immediately: context cancel/deadline,
+   TLS certificate failures (`*tls.CertificateVerificationError`,
+   `x509.UnknownAuthorityError`, `x509.HostnameError`), plus any 4xx
+   except 429.
+3. **Backoff**: exponential with ±25% jitter, capped at 10 seconds
+   INCLUDING jitter (so "max 10s" means observed delay is never
+   more than 10s). Each attempt checks `ctx.Err()` before running;
+   each backoff sleep checks whether it would overshoot the
+   caller's deadline and bails out early if so.
+4. **Stub bodies are NOT retried** — only network and status-code
+   transients. Stub-body escalation stays with the router's
+   validity → next-tier path (the design call from the proposal).
+5. `--retries N` (default 2) and `--retry-delay` (default 500ms)
+   on scrape/batch/crawl. Chromium doesn't get retries in v1 —
+   chromedp's timeout model is different and chromium fetches
+   fail less frequently from network transients.
+
+### Phase: Per-host politeness overrides — SHIPPED 2026-04-10
+
+Off-roadmap before this batch. Global rate/concurrency worked fine
+for uniform crawls but couldn't express "slow-crawl SEP to one
+request every 2s but hammer internal APIs at 10/s in the same job."
+
+**What landed:**
+1. New `internal/politeness/hostrules.go`: `HostRules` (version +
+   hosts list), `HostRule` (match, rate, concurrency). `LoadHostRules`
+   parses strict YAML (`KnownFields=true` so typos fail loudly).
+   Validation: version must be 1, at least one rule, non-empty match,
+   at least one of rate/concurrency set per rule.
+2. **Match syntax**: exact host (`example.com`) OR suffix wildcard
+   (`*.gov`, matches subdomains but not the bare TLD — `*.gov` does
+   NOT match "gov"). Case-insensitive. First rule wins, so specific
+   rules go before catch-alls.
+3. `Gate.WithHostRules` attaches rules; `stateFor(host)` consults
+   `effectiveHostConfig` before building a domainState. Per-host
+   rate and per-host concurrency both supported; burst stays global
+   for v1.
+4. `--politeness <file>` on scrape/batch/crawl/map. Map is included
+   because polite slow-crawling of a gentle host matters more than
+   map's ephemerality. File is loaded once at command start.
+5. Example at `docs/examples/politeness.yaml` showing SEP and `*.gov`
+   slow-crawl rules.
 
 ---
 

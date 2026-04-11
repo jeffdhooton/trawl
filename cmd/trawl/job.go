@@ -32,8 +32,12 @@ type JobConfig struct {
 	Format           string `json:"format,omitempty"`
 	Readability      bool   `json:"readability,omitempty"`
 	NoMetadata       bool   `json:"no_metadata,omitempty"`
-	ScreenshotDir    string `json:"screenshot_dir,omitempty"`
-	SchemaPath       string `json:"schema_path,omitempty"`
+	ScreenshotDir    string   `json:"screenshot_dir,omitempty"`
+	SchemaPath       string   `json:"schema_path,omitempty"`
+	CSVColumns       []string `json:"csv_columns,omitempty"`
+	Retries          int      `json:"retries,omitempty"`
+	RetryDelay       string   `json:"retry_delay,omitempty"`
+	PolitenessPath   string   `json:"politeness_path,omitempty"`
 	// Content cache knobs (opt-in). When CacheEnabled is true the router
 	// consults a shared BadgerDB cache at CachePath (default
 	// $TRAWL_HOME/content-cache) and serves hits under CacheTTL without
@@ -127,6 +131,21 @@ func (c *JobConfig) timeoutDuration() time.Duration {
 	d, err := time.ParseDuration(c.Timeout)
 	if err != nil || d == 0 {
 		return 30 * time.Second
+	}
+	return d
+}
+
+// retryDelayDuration parses RetryDelay ("500ms", "1s", etc) into a
+// time.Duration. Empty / invalid values return 0, which the caller
+// interprets as "use the engine's default" — kept distinct from an
+// explicit zero, which the flag type doesn't allow anyway.
+func (c *JobConfig) retryDelayDuration() time.Duration {
+	if c.RetryDelay == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(c.RetryDelay)
+	if err != nil {
+		return 0
 	}
 	return d
 }

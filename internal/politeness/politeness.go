@@ -54,6 +54,12 @@ type Gate struct {
 	mu        sync.Mutex
 	byDomain  map[string]*domainState
 	globalSem chan struct{}
+	// hostRules is an optional per-host override set loaded from
+	// --politeness. nil means "no overrides, cfg values apply to all
+	// hosts." Consulted inside stateFor when building a new
+	// domainState; changing it after workers are running will only
+	// affect hosts seen for the first time AFTER the change.
+	hostRules *HostRules
 }
 
 type domainState struct {
@@ -161,9 +167,16 @@ func (g *Gate) stateFor(host string) *domainState {
 	if ds, ok := g.byDomain[host]; ok {
 		return ds
 	}
+	// Resolve the effective rate and per-host concurrency cap,
+	// consulting per-host rules if the Gate has any. Burst stays
+	// global for v1 — nobody has asked for per-host burst.
+	effRate, effConc := g.effectiveHostConfig(host)
+	if effConc <= 0 {
+		effConc = g.cfg.MaxConcurrentPerDomain
+	}
 	ds := &domainState{
-		limiter: rate.NewLimiter(g.cfg.RatePerDomain, g.cfg.BurstPerDomain),
-		sem:     make(chan struct{}, g.cfg.MaxConcurrentPerDomain),
+		limiter: rate.NewLimiter(effRate, g.cfg.BurstPerDomain),
+		sem:     make(chan struct{}, effConc),
 	}
 	g.byDomain[host] = ds
 	return ds

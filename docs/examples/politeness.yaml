@@ -1,0 +1,31 @@
+# Per-host politeness overrides.
+#
+# Rules are evaluated top-to-bottom; the FIRST match wins. Put the
+# most specific rules first and wildcard catch-alls last. Any host
+# not matched by any rule gets the global defaults set via
+# --rate / --concurrency.
+#
+# Match syntax:
+#   "example.com"   exact host match
+#   "*.stanford.edu" suffix wildcard — matches subdomains, not the bare TLD
+#
+# Fields (at least one of rate / concurrency must be set per rule):
+#   rate         requests per second (float — 0.5 = one every 2s)
+#   concurrency  in-flight cap for this host (int)
+#
+# Usage:
+#   trawl batch urls.txt --politeness docs/examples/politeness.yaml
+
+version: 1
+hosts:
+  # Example: slow-crawl the Stanford Encyclopedia of Philosophy. The
+  # SEP serves large academic articles and nobody's in a hurry — be
+  # gentle. One request every two seconds, one in flight at a time.
+  - match: "plato.stanford.edu"
+    rate: 0.5
+    concurrency: 1
+
+  # Example: any .gov site gets a conservative baseline.
+  - match: "*.gov"
+    rate: 0.5
+    concurrency: 2
