@@ -1,7 +1,7 @@
 # trawl — roadmap
 
-**Current phase:** Open — eight phases shipped 2026-04-10 (BFS, map, screenshot, cache, schema, CSV output, HTTP retries, per-host politeness)
-**Last updated:** 2026-04-10
+**Current phase:** Open — **v0.1.0 shipped 2026-04-11** (first tagged release). Eight phases landed 2026-04-10 (BFS, map, screenshot, cache, schema, CSV output, HTTP retries, per-host politeness), schema validated in production via SEP's 1857-entry corpus (100% reach, 0 failures), anti-detection design doc landed, GoReleaser + install.sh + GitHub Actions release pipeline landed, v0.1.0 tagged and published with verified end-to-end distribution.
+**Last updated:** 2026-04-11
 
 This doc is the single source of truth for "what's next and why." The
 decision log in `docs/DECISIONS.md` captures one-off architectural
