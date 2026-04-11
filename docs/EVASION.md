@@ -408,6 +408,116 @@ Evidence requirement is high because Tier 3's maintenance burden
 is real — a stale `utls` version is a reliability bug, not just
 a feature gap.
 
+#### SHIPPED 2026-04-11
+
+Built speculatively, same justification as Tier 1 + Tier 2:
+"the next hostile target should hit a tool that's already ready."
+The §5.3 decision rule above is therefore retroactively waived
+for the Chrome preset only. The decision is recorded in
+`docs/DECISIONS.md` along with the maintenance commitment, since
+Tier 3's maintenance burden is the load-bearing reason the rule
+was strict in the first place.
+
+What actually shipped, deviations from the design above:
+
+- `--tls-match <preset>` flag on scrape, batch, crawl, and map.
+  Wired through the same shared `cmd/trawl/evasion.go` helper as
+  the four Tier 1+2 flags. **Only `chrome` is shipped** —
+  `safari` / `firefox` were deferred to "second consumer asks."
+  An invalid preset fails the command immediately rather than
+  silently degrading to Go's stdlib fingerprint.
+- `HTTPConfig.TLSMatch string` field. Empty (the default)
+  preserves the byte-identical pre-Tier-3 stdlib transport.
+  Non-empty branches `NewHTTP` to construct a uTLS-backed
+  transport via `internal/engine/tls_utls.go:newUTLSTransport`.
+- **Strategy:** keep stdlib `http.Transport` intact (HTTP
+  semantics, conn pooling, redirects, retries all unchanged) and
+  swap **only** the TLS handshake by setting
+  `Transport.DialTLSContext`. Inside the dialer we open a raw
+  TCP conn, hand it to `utls.UClient` with `HelloChrome_Auto`,
+  and return the resulting UConn. This is the narrowest possible
+  change — every other code path in `internal/engine/http.go`
+  is untouched on the non-TLS-match path.
+- `HTTPConfig.TLSRootCAs *x509.CertPool` was added alongside.
+  Defensible production feature (trust an internal CA without
+  disabling verification) and required for the local TLS test
+  fixtures to validate self-signed certs. Threaded into BOTH
+  the stdlib transport's `TLSClientConfig` and the uTLS path's
+  `utls.Config.RootCAs`.
+- `metadata.evasion.tls_match` field on the JSONL record (and
+  `EvasionInfo.TLSMatch` engine-side). Stamped by the HTTP
+  engine in `fetchOnce` whenever `cfg.TLSMatch != ""`. Empty
+  on every other engine path so default-mode JSONL stays
+  byte-identical.
+- `engine.ValidateTLSPreset` is the single source of truth for
+  "is this a known preset name." `applyEvasion` calls it before
+  touching any config field so a typo fails the command.
+
+**Known limitation: HTTP/1.1 only over the forged transport.**
+Stdlib `http.Transport`'s automatic HTTP/2 upgrade requires the
+conn returned by `DialTLSContext` to be a `*tls.Conn`. uTLS's
+`UConn` is a different type, so stdlib falls back to HTTP/1.1
+framing on the wire even when ALPN negotiated h2 — which causes
+"malformed HTTP response" errors against any h2-only server.
+The fix is to override the parrot's ALPN extension to advertise
+**only** http/1.1, which we do by grabbing the Chrome spec via
+`utls.UTLSIdToSpec`, rewriting the `ALPNExtension` in place, and
+applying it via `HelloCustom`.
+
+The cost: our forged JA4 is `t13d1516h1_...` (h1 ALPN) where
+real Chrome's would be `t13d1516h2_...` (h2 ALPN). Cipher list,
+extensions, signature algorithms, and supported groups all match
+Chrome exactly; only the ALPN protocol marker differs. A strict
+JA4 detector that hashes on the full string will see "Chrome
+but http/1.1-only," which is still distinguishable from Go
+stdlib (`t13d1312h2_...`) but not identical to real Chrome.
+
+Lifting this limitation requires routing h2 traffic through
+`golang.org/x/net/http2.Transport` with a custom DialTLS — its
+own follow-up PR with a new test surface. Not shipped here.
+
+**HTTP/2 SETTINGS frame forging is also still deferred** per
+§8.3 — that's the *next* layer after this PR closes the JA4
+forgery question, and only matters for detectors that combine
+TLS+SETTINGS (e.g., Akamai, Cloudflare's most aggressive mode).
+
+**Cipher-list verification:** an end-to-end test in
+`internal/engine/tls_utls_test.go` stands up a `tls.Listen` on a
+self-signed cert, captures `ClientHelloInfo` via
+`GetConfigForClient`, runs the same fetch with `TLSMatch: "chrome"`
+and `TLSMatch: ""` against fresh listener fixtures, and asserts
+the two cipher lists are NOT equal. This is the cheapest unit
+proof that something different is on the wire without committing
+the test to a specific cipher list (which would break each time
+uTLS rolled HelloChrome_Auto forward).
+
+**Manual smoke procedure:**
+
+```bash
+trawl scrape https://tls.peet.ws/api/all --tls-match chrome \
+  --format html --tiers http -o /tmp/peet.jsonl
+jq -r '.body' /tmp/peet.jsonl | jq '{ja3_hash:.tls.ja3_hash, ja4:.tls.ja4}'
+```
+
+Compare to a baseline run without `--tls-match`. A real forgery
+shows different `ja3_hash` and `ja4` values; the chrome path's
+JA4 should start with `t13d1516h1_` (16-cipher Chrome with h1
+ALPN). Quarterly verification against this is the maintenance
+commitment recorded in DECISIONS.md.
+
+What was deferred from this PR:
+
+- **Safari / Firefox / iOS / Android presets.** uTLS supports
+  them; we ship only Chrome until a second consumer asks.
+- **HTTP/2 over forged TLS.** See limitation above.
+- **HTTP/2 SETTINGS frame forging.** Separate decision rule;
+  haven't seen evidence it's needed.
+- **Header order forging.** Pointless on h2 (HPACK has no
+  ordering); on h1 it's a rabbit hole with dubious ROI.
+- **`--tls-match` for chromium tier.** Chromium has its own
+  real Chrome TLS stack — the flag deliberately does nothing
+  there. Documented in the flag help.
+
 ### 5.4 Tier 4 — Ship in coordination with `docs/PROXIES.md`
 
 No separate evasion implementation. Proxy rotation is the P2

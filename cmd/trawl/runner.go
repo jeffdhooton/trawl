@@ -134,6 +134,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		userAgentStrategy: cfg.UserAgentStrategy,
 		stealth:           cfg.Stealth,
 		noJitter:          cfg.NoJitter,
+		tlsMatch:          cfg.TLSMatch,
 	}
 	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, jobEvasion); err != nil {
 		return err

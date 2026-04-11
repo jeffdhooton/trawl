@@ -23,6 +23,7 @@ type evasionOpts struct {
 	userAgentStrategy string // raw flag value, parsed by engine.ParseUAStrategy
 	stealth           bool
 	noJitter          bool
+	tlsMatch          string // Tier 3: empty (off) | "chrome"
 }
 
 // registerEvasionFlags wires the four flags onto a cobra command.
@@ -41,6 +42,10 @@ func registerEvasionFlags(cmd *cobra.Command, e *evasionOpts) {
 			"WebGL fingerprints) before navigation (see docs/EVASION.md §5.2)")
 	cmd.Flags().BoolVar(&e.noJitter, "no-jitter", false,
 		"disable timing jitter even when --browser-like is set (deterministic pacing)")
+	cmd.Flags().StringVar(&e.tlsMatch, "tls-match", "",
+		`Tier 3: forge ClientHello to match a real browser. Currently only "chrome" `+
+			`is supported. Affects only the http engine — chromium uses its own real `+
+			`TLS stack. See docs/EVASION.md §5.3.`)
 }
 
 // applyEvasion pushes the parsed flag values into the engine + gate
@@ -68,6 +73,13 @@ func applyEvasion(
 	if err != nil {
 		return fmt.Errorf("--user-agent: %w", err)
 	}
+	// Validate the TLS preset BEFORE we touch any config fields so a
+	// typo fails the command instead of silently degrading to Go's
+	// stdlib fingerprint (which would defeat the whole opt-in).
+	if err := engine.ValidateTLSPreset(opts.tlsMatch); err != nil {
+		return fmt.Errorf("--tls-match: %w", err)
+	}
+	httpCfg.TLSMatch = opts.tlsMatch
 	httpCfg.UserAgentStrategy = strategy
 	if strategy == engine.UAStrategyFixed {
 		// ParseUAStrategy returns the unwrapped string in fixedUA;
@@ -116,7 +128,7 @@ func applyEvasion(
 // post-hoc audits cross-reference this against metadata.evasion in
 // the JSONL output.
 func logEvasion(opts evasionOpts) {
-	if !opts.browserLike && !opts.stealth && opts.userAgentStrategy == "" {
+	if !opts.browserLike && !opts.stealth && opts.userAgentStrategy == "" && opts.tlsMatch == "" {
 		return
 	}
 	log.Info().
@@ -124,6 +136,7 @@ func logEvasion(opts evasionOpts) {
 		Bool("stealth", opts.stealth).
 		Str("user_agent_strategy", evasionStrategyForLog(opts)).
 		Bool("no_jitter", opts.noJitter).
+		Str("tls_match", opts.tlsMatch).
 		Msg("evasion enabled")
 }
 

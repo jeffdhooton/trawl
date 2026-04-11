@@ -54,6 +54,7 @@ type JobConfig struct {
 	UserAgentStrategy string `json:"user_agent_strategy,omitempty"`
 	Stealth           bool   `json:"stealth,omitempty"`
 	NoJitter          bool   `json:"no_jitter,omitempty"`
+	TLSMatch          string `json:"tls_match,omitempty"`
 
 	// Crawl mode — set by `trawl crawl`. When CrawlMode is true, runJob
 	// uses BlockingNext, enqueues discovered children at depth+1, and

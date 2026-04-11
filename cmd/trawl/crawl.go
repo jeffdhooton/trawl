@@ -190,6 +190,7 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		UserAgentStrategy: opts.evasion.userAgentStrategy,
 		Stealth:           opts.evasion.stealth,
 		NoJitter:          opts.evasion.noJitter,
+		TLSMatch:          opts.evasion.tlsMatch,
 		CrawlMode:       true,
 		CrawlMaxDepth:   opts.depth,
 		CrawlSameDomain: opts.sameDomain,

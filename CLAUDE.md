@@ -58,19 +58,40 @@ in `internal/engine/useragent.go`, gate jitter in
 `politeness.Gate.Acquire` returning `(release, jitterMS, err)`,
 `metadata.evasion = {browser_like, stealth, user_agent, jitter_ms}`
 omitempty pointer so default-mode JSONL is byte-identical to
-pre-evasion — full design + decision rules in `docs/EVASION.md`).
+pre-evasion — full design + decision rules in `docs/EVASION.md`),
+Tier 3 evasion (`--tls-match chrome` forges Chrome ClientHello via
+`github.com/refraction-networking/utls` v1.8.2,
+`internal/engine/tls_utls.go` swaps only `http.Transport.DialTLSContext`
+so HTTP semantics + pooling + retries + cookies are unchanged,
+Chrome parrot via `HelloChrome_Auto` with the ALPN extension
+overridden to http/1.1 only via `UTLSIdToSpec` + `HelloCustom`
+because stdlib's h2 path requires `*tls.Conn` which uTLS UConn
+isn't — forged JA4 lands as `t13d1516h1_8daaf6152771_d8a2da3f94cd`,
+deviating from real Chrome only on the ALPN dimension, cipher
+list and extension hashes still match, `HTTPConfig.TLSRootCAs`
+field for trusting internal CAs without disabling verification,
+`engine.ValidateTLSPreset` rejects typos at flag-parse time so
+the operator never silently degrades to Go's stdlib fingerprint,
+`metadata.evasion.tls_match` stamped on forged-path records,
+quarterly maintenance commitment recorded in `docs/DECISIONS.md`
+to keep `HelloChrome_Auto` from drifting, full design in
+`docs/EVASION.md` §5.3 SHIPPED).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
 **Deferred:** Lightpanda — see DECISIONS.md for the decision rule
 and the three data points (11.4% → 4.4% → 14.08% escalation).
-Tier 3 (uTLS fingerprint forgery) and Tier 4 (proxy rotation) — see
-EVASION.md §5.3 / §5.4 for their decision rules, both still in force.
+Tier 4 (proxy rotation) — see `docs/PROXIES.md` and EVASION.md §5.4
+for the decision rule, still in force. Tier 3 HTTP/2 over forged TLS
+and HTTP/2 SETTINGS frame forging are documented follow-ups in
+EVASION.md §5.3 SHIPPED.
 
 **Current direction:** Open — eight phases shipped on 2026-04-10
 (BFS, URL map, screenshot, content cache, schema extract, CSV output,
 HTTP retries, per-host politeness), Tier 1 + Tier 2 evasion shipped
-2026-04-11 (speculatively, see DECISIONS.md). See `docs/ROADMAP.md`
-for the remaining deferred items.
+2026-04-11 (speculatively, see DECISIONS.md), Tier 3 evasion
+(Chrome JA4 forgery, narrow scope) shipped 2026-04-11 (also
+speculatively, with maintenance commitment recorded). See
+`docs/ROADMAP.md` for the remaining deferred items.
 
 ## Read these first
 

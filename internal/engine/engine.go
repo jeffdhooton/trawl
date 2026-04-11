@@ -62,4 +62,8 @@ type EvasionInfo struct {
 	BrowserLike bool
 	Stealth     bool
 	UserAgent   string
+	// TLSMatch is the active --tls-match preset (e.g. "chrome") when
+	// Tier 3 evasion swapped the HTTP engine's transport. Empty when
+	// the stdlib transport handled this fetch.
+	TLSMatch string
 }

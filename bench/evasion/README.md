@@ -11,9 +11,24 @@ on the targets we expected to need Tier 3, we don't need Tier 3 yet.
   tier each target is *expected* to need before running. Update the
   comments after each run with what was *observed* so the file
   becomes a living record.
-- `run.sh` — sweeps every target through three modes (baseline /
-  Tier 1 / Tier 1+2) and prints a comparison table. Raw JSONL goes
-  into a timestamped `results-YYYYMMDD-HHMMSS/` directory.
+- `run.sh` — sweeps every target through four modes (baseline /
+  Tier 1 / Tier 1+2 / Tier 3) and prints a comparison table. Raw
+  JSONL goes into a timestamped `results-YYYYMMDD-HHMMSS/`
+  directory.
+
+  - **baseline:** default trawl, no evasion.
+  - **tier1:** `--browser-like`. http path with rotating UA + full
+    Chrome header set + cookie jar + ±20% jitter. Default tier
+    ladder, so chromium fallback is allowed.
+  - **tier1+2:** `--browser-like --stealth --tiers chromium`. Forces
+    chromium so we test the stealth.js init script, not whether
+    headers + UA already won.
+  - **tier3:** `--browser-like --tls-match chrome --tiers http`.
+    Forces http so we test ClientHello forgery in isolation —
+    chromium would use its own real Chrome TLS and mask the signal.
+    The interesting transition is `tier1=blocked` (or fell back
+    to chromium) AND `tier3=ok` → JA3/JA4-blocking footprint that
+    Tier 3 unlocks.
 
 ## Running it
 

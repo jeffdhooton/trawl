@@ -255,6 +255,7 @@ func stampEvasion(rec *output.Record, best *engine.Result, jitterMS int64) {
 		stats.BrowserLike = best.Evasion.BrowserLike
 		stats.Stealth = best.Evasion.Stealth
 		stats.UserAgent = best.Evasion.UserAgent
+		stats.TLSMatch = best.Evasion.TLSMatch
 	}
 	rec.Metadata.Evasion = &stats
 }

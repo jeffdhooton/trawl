@@ -183,6 +183,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		UserAgentStrategy: opts.evasion.userAgentStrategy,
 		Stealth:           opts.evasion.stealth,
 		NoJitter:          opts.evasion.noJitter,
+		TLSMatch:          opts.evasion.tlsMatch,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

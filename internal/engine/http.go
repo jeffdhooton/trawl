@@ -52,6 +52,18 @@ type HTTPConfig struct {
 	// The jar is constructed by the cmd-layer (one per job) and
 	// passed in here, so per-job ownership stays explicit.
 	CookieJar http.CookieJar
+	// TLSMatch enables Tier 3 evasion by replacing Go's stdlib TLS
+	// handshake with a forged ClientHello. Empty string keeps the
+	// default stdlib transport (byte-identical to pre-Tier-3 trawl).
+	// Currently the only supported value is "chrome"; see
+	// docs/EVASION.md §5.3 and internal/engine/tls_utls.go.
+	TLSMatch string
+	// TLSRootCAs, when non-nil, is used as the root certificate pool
+	// for TLS verification on BOTH the stdlib and uTLS paths. Nil
+	// means use the system trust store. Tests use this to trust a
+	// self-signed httptest cert; production users can use it to
+	// trust an internal CA without disabling verification.
+	TLSRootCAs *x509.CertPool
 }
 
 // DefaultHTTPConfig returns production-sensible defaults.
@@ -98,19 +110,31 @@ func NewHTTP(cfg HTTPConfig) *HTTP {
 		cfg.MaxRedirects = 10
 	}
 
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:          cfg.MaxIdleConns,
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       cfg.IdleConnTimeout,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-		ForceAttemptHTTP2:     true,
+	var transport http.RoundTripper
+	if cfg.TLSMatch != "" {
+		// Tier 3: forged ClientHello via uTLS. Failure here is fatal —
+		// silently degrading to the stdlib transport would defeat the
+		// whole point of opting in.
+		ut, err := newUTLSTransport(cfg, cfg.TLSMatch)
+		if err != nil {
+			panic(fmt.Sprintf("trawl: --tls-match %q: %v", cfg.TLSMatch, err))
+		}
+		transport = ut
+	} else {
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          cfg.MaxIdleConns,
+			MaxIdleConnsPerHost:   16,
+			IdleConnTimeout:       cfg.IdleConnTimeout,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: cfg.TLSRootCAs},
+			ForceAttemptHTTP2:     true,
+		}
 	}
 
 	e := &HTTP{cfg: cfg}
@@ -291,10 +315,11 @@ func (e *HTTP) fetchOnce(ctx context.Context, req Request) (*Result, error) {
 		Body:        body,
 		Duration:    time.Since(start),
 	}
-	if e.cfg.BrowserLikeHeaders || e.cfg.UserAgentStrategy != UAStrategyDeclared {
+	if e.cfg.BrowserLikeHeaders || e.cfg.UserAgentStrategy != UAStrategyDeclared || e.cfg.TLSMatch != "" {
 		res.Evasion = &EvasionInfo{
 			BrowserLike: e.cfg.BrowserLikeHeaders,
 			UserAgent:   chosenUA,
+			TLSMatch:    e.cfg.TLSMatch,
 		}
 	}
 	return res, nil

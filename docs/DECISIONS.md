@@ -6,6 +6,135 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-11 — Tier 3 evasion (Chrome JA4 forgery): also speculative ship, narrow scope, accept maintenance commitment
+
+**Decision:** Ship `--tls-match chrome` (Tier 3 ClientHello forgery
+via `github.com/refraction-networking/utls`) without waiting for a
+consumer JA3/JA4-blocking report. Same speculative-ship logic as
+the Tier 1+2 decision below, with two extra constraints that the
+load-bearing nature of the §5.3 decision rule deserved:
+
+1. **Narrow scope.** Ship Chrome only — no Safari/Firefox/iOS
+   presets, no HTTP/2 SETTINGS frame forging, no header order
+   forging. Each new preset is a future maintenance burden, and
+   shipping all of them speculatively multiplies the cost without
+   evidence any of them are needed.
+2. **Maintenance commitment recorded.** uTLS's `HelloChrome_Auto`
+   tracks the latest Chrome the *uTLS library* has seen, NOT the
+   latest Chrome that's actually deployed. Quarterly verification
+   against `tls.peet.ws` is the durable commitment that makes
+   "speculative ship" honest — without it the feature decays from
+   "Tier 3 evasion" to "Tier 3 fingerprint that no real Chrome
+   matches anymore."
+
+**Context:** `docs/EVASION.md` §5.3 set the strictest gate of any
+tier: a consumer report with a packet capture showing JA3/JA4
+blocking AND demonstrable Tier 1+2 failure. The bench at
+`bench/evasion/run.sh` from the Tier 1+2 PR found 0/12 reachable
+hostile targets where Tier 1+2 was insufficient (G2 was a
+DataDome CAPTCHA, refused per §6.1). So the strict reading of the
+rule says "wait." But the same speculative-ship logic that won
+for Tier 1+2 — "the next hostile target should hit a tool that's
+ready" — applies here too, as long as the maintenance cost is
+acknowledged and bounded.
+
+**What the data said:** Mixed, recorded honestly.
+
+- **The forgery is real.** Smoke against `tls.peet.ws` confirms
+  the wire-level signature changes: forged JA4
+  `t13d1516h1_8daaf6152771_d8a2da3f94cd` (16 ciphers, Chrome
+  cipher list, h1 ALPN) vs baseline `t13d1312h2_f57a46bbacb6_ab7e3b40a677`
+  (13 ciphers, Go stdlib, h2 ALPN). Different JA3 hash, different
+  JA4, different cipher count. The forgery is observable from
+  the server side, which is the necessary precondition for it
+  to be useful.
+- **The forgery does not unblock anything in our 13-target bench.**
+  `bench/evasion/run.sh` was extended with a `tier3` mode
+  (`--browser-like --tls-match chrome --tiers http`, forced to
+  http to isolate the ClientHello from chromium's real Chrome
+  TLS) and re-run on the same `targets.txt` corpus. **0 of 13
+  targets** flipped from blocked-at-tier1 to ok-at-tier3. The
+  four targets where the http path was blocked at tier1
+  (glassdoor, crunchbase, g2, walmart) returned the **same**
+  403/404 response under tier3, with body sizes within ~100
+  bytes of the tier1 responses. The TLS handshake completed;
+  the blocks are at the HTTP/application layer (UA/header
+  gating, JS fingerprinting, CAPTCHA challenges) — none of
+  which TLS forgery touches.
+
+**What this means for the speculative-ship decision:** the bench
+**confirms** the strict reading of §5.3 was correct in the
+narrow sense that Tier 3 doesn't unlock anything in our current
+corpus. It does not **refute** the speculative-ship rationale —
+that rationale was always "be ready for the next hostile target,"
+not "fix something we have today." The cost of being ready
+turned out to be ~400 LOC plus the maintenance commitment below.
+Future-us should know:
+
+- If a consumer ever shows up with a JA3/JA4-blocking target,
+  Tier 3 is sitting in trawl ready to use, and DECISIONS.md
+  records *why* it was built without a consumer ask.
+- If 6 months pass and no consumer ever uses `--tls-match`,
+  the right call is to keep it (cost is bounded by the quarterly
+  check) but not invest further in Tier 3 follow-ups (h2 over
+  uTLS, additional presets, SETTINGS frame forging) until the
+  decision rule is properly satisfied.
+- The bench is the empirical floor: anyone proposing "we should
+  add `--tls-match safari`" or "we should ship h2 over uTLS"
+  must first show a target the current Tier 3 fails on AND
+  point at a consumer that needs it. Speculative-build is a
+  one-time waiver, not a precedent.
+
+**Known limitation accepted:** HTTP/1.1 only over the forged
+transport. Stdlib `http.Transport`'s auto-h2 upgrade requires
+`DialTLSContext` to return `*tls.Conn`; uTLS UConn isn't one. We
+override the parrot's ALPN extension to advertise http/1.1 only
+so the wire protocol matches what ALPN claims. The cost is that
+forged JA4 deviates from real Chrome on the ALPN dimension only
+(`h1` vs `h2`). Detectors that match on ja4_a + ja4_b (cipher +
+extension hashes) still see "Chrome." Detectors that match on
+the full JA4 string see "Chrome but http/1.1-only." Lifting the
+limitation requires routing h2 traffic through
+`golang.org/x/net/http2.Transport` with a custom DialTLS — its
+own follow-up.
+
+**What would change our minds (= revert to deferred or rewrite):**
+
+- A consumer reports Tier 3 broke a target that Tier 1+2 was
+  reaching, in a way that fingerprint changes alone can't fix.
+  That would mean we encoded an assumption about *how* JA3/JA4
+  detection works that turned out wrong.
+- The quarterly verification reveals that real Chrome's
+  fingerprint has drifted enough from `HelloChrome_Auto` that
+  forging it is no better than not forging — at which point we
+  either bump the uTLS pin or accept that the feature is stale
+  and document it.
+- HTTP/1.1-only forced fallback turns out to be a problem in
+  practice (h2-only servers exist and break under our forgery).
+  In that case the "ship h2 over uTLS via http2.Transport"
+  follow-up moves from "would be nice" to "blocking."
+
+**Maintenance commitment (the load-bearing part):**
+
+- **Quarterly:** run the smoke against `tls.peet.ws` with
+  `--tls-match chrome` and confirm the JA4 still matches a
+  real Chrome (modulo the documented `h1`/`h2` ALPN difference).
+  If it drifts, bump `github.com/refraction-networking/utls` and
+  re-verify.
+- **On Chrome major release:** spot-check that `HelloChrome_Auto`
+  in our pinned uTLS version still parrots a recent Chrome. If
+  the gap exceeds two majors (~3 months), bump.
+- **On any consumer report of Tier 3 failure:** the smoke and
+  the comparison against the consumer's packet capture are the
+  diagnostic — fix the gap or escalate per the "what would
+  change our minds" rules above.
+
+The pin is `github.com/refraction-networking/utls v1.8.2`
+(installed 2026-04-11). When this entry is read in the future,
+diff against current Chrome and decide.
+
+---
+
 ## 2026-04-11 — Tier 1 + Tier 2 evasion: build speculatively, waive the consumer-ask rule
 
 **Decision:** Ship `--browser-like` (Tier 1: rotating UAs, Chrome

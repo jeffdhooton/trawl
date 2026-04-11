@@ -12,6 +12,13 @@
 #                    (same as tier1 plus chromium stealth init script,
 #                     forced to chromium so the http engine isn't
 #                     even attempted — we want to test stealth)
+#   4. tier3       — --browser-like --tls-match chrome --tiers http
+#                    (Chrome JA4 forgery via uTLS on the http path,
+#                     forced to http because chromium has its own real
+#                     Chrome TLS stack and would mask the signal —
+#                     we want to know if forging the ClientHello alone
+#                     unblocks anything that tier1 couldn't reach
+#                     on the http path)
 #
 # Verdict heuristic per row:
 #   - status >= 400              → "blocked"
@@ -155,6 +162,21 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   v2=$(verdict "${s2}" "${b2}" "${e2}")
   printf '%-55s  %-9s  %-7s  %-9s  %-9s  %s\n' \
     "" "tier1+2" "${s2}" "${b2}" "${t2}" "${v2}"
+
+  # 4. Tier 3 via http. Forces --tiers http so we isolate the
+  # ClientHello forgery — chromium would use its own real Chrome
+  # TLS stack and serve the row regardless, masking any signal.
+  # The interesting case is "tier1 http path failed AND tier3
+  # http path succeeded" — that's the JA4-blocking footprint.
+  tier3_out="${RESULTS_DIR}/${idx}-tier3.jsonl"
+  tier3_json="$(fetch_one tier3 "${url}" "${tier3_out}" --browser-like --tls-match chrome --tiers http)"
+  s3=$(jq -r '.status_code // 0' <<<"${tier3_json}")
+  b3=$(jq -r '.body_bytes // 0' <<<"${tier3_json}")
+  t3=$(jq -r '.tier // "-"' <<<"${tier3_json}")
+  e3=$(jq -r '.error // ""' <<<"${tier3_json}")
+  v3=$(verdict "${s3}" "${b3}" "${e3}")
+  printf '%-55s  %-9s  %-7s  %-9s  %-9s  %s\n' \
+    "" "tier3" "${s3}" "${b3}" "${t3}" "${v3}"
   printf '\n'
 
   # Polite pause between targets so we're not bombing any one detector

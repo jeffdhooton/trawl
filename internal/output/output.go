@@ -69,6 +69,10 @@ type EvasionStats struct {
 	Stealth     bool   `json:"stealth,omitempty"`
 	UserAgent   string `json:"user_agent,omitempty"`
 	JitterMS    int64  `json:"jitter_ms,omitempty"`
+	// TLSMatch is the active --tls-match preset (e.g. "chrome") when
+	// Tier 3 evasion forged the ClientHello for this fetch. Empty
+	// when the stdlib transport handled it.
+	TLSMatch string `json:"tls_match,omitempty"`
 }
 
 // DiscoveryStats records how a record's target URL was discovered when
