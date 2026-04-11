@@ -25,11 +25,16 @@ type HostRules struct {
 // "any host ending in .gov"). Rate is requests per second (float64
 // because fractional rates are common for slow-crawl cases like
 // `0.5` = one request every two seconds). Concurrency is the per-host
-// in-flight cap; zero means "use the Gate default."
+// in-flight cap; zero means "use the Gate default." Jitter is the
+// ±fraction of base interval to randomize on top of the limiter
+// pacing; zero means "use the Gate default" (which is also zero
+// for the polite-by-default Gate). To turn jitter ON for one host
+// while leaving the Gate default off, set jitter to e.g. 0.2.
 type HostRule struct {
 	Match       string  `yaml:"match"`
 	Rate        float64 `yaml:"rate,omitempty"`
 	Concurrency int     `yaml:"concurrency,omitempty"`
+	Jitter      float64 `yaml:"jitter,omitempty"`
 }
 
 // LoadHostRules reads a YAML file into a HostRules value. Validates
@@ -67,8 +72,8 @@ func (hr *HostRules) Validate() error {
 		if strings.TrimSpace(r.Match) == "" {
 			return fmt.Errorf("hosts[%d]: match is empty", i)
 		}
-		if r.Rate <= 0 && r.Concurrency <= 0 {
-			return fmt.Errorf("hosts[%d] (%q): must set at least one of rate, concurrency", i, r.Match)
+		if r.Rate <= 0 && r.Concurrency <= 0 && r.Jitter <= 0 {
+			return fmt.Errorf("hosts[%d] (%q): must set at least one of rate, concurrency, jitter", i, r.Match)
 		}
 	}
 	return nil
@@ -118,13 +123,15 @@ func (g *Gate) WithHostRules(hr *HostRules) *Gate {
 	return g
 }
 
-// effectiveHostConfig returns the (rate, concurrency) the Gate should
-// use when constructing a domainState for the given host. Falls back
-// to the Gate's global config when no rule matches or when a rule
-// leaves individual fields zero.
-func (g *Gate) effectiveHostConfig(host string) (rate.Limit, int) {
+// effectiveHostConfig returns the (rate, concurrency, jitterFraction)
+// the Gate should use when constructing a domainState for the given
+// host. Falls back to the Gate's global config when no rule matches
+// or when a rule leaves individual fields zero. Jitter is treated
+// the same way: zero in the rule means "inherit gate default."
+func (g *Gate) effectiveHostConfig(host string) (rate.Limit, int, float64) {
 	r := g.cfg.RatePerDomain
 	c := g.cfg.MaxConcurrentPerDomain
+	j := g.cfg.JitterFraction
 	if g.hostRules != nil {
 		if rule := g.hostRules.Match(host); rule != nil {
 			if rule.Rate > 0 {
@@ -133,7 +140,10 @@ func (g *Gate) effectiveHostConfig(host string) (rate.Limit, int) {
 			if rule.Concurrency > 0 {
 				c = rule.Concurrency
 			}
+			if rule.Jitter > 0 {
+				j = rule.Jitter
+			}
 		}
 	}
-	return r, c
+	return r, c, j
 }

@@ -15,7 +15,11 @@ import (
 //	chromium   — requires a local Chrome/Chromium binary on PATH
 //
 // If forceTier is non-empty, only that engine is used (no escalation).
-func buildRouter(tiers []string, forceTier string, httpCfg engine.HTTPConfig) (*router.Router, error) {
+// chromiumCfg seeds the chromium engine when that tier is in the
+// list; the http UA from httpCfg is copied in unless chromiumCfg
+// already overrides it, so existing call sites that don't care about
+// chromium-specific settings keep working with a zero ChromiumConfig.
+func buildRouter(tiers []string, forceTier string, httpCfg engine.HTTPConfig, chromiumCfg engine.ChromiumConfig) (*router.Router, error) {
 	var names []string
 	if forceTier != "" {
 		names = []string{forceTier}
@@ -33,8 +37,25 @@ func buildRouter(tiers []string, forceTier string, httpCfg engine.HTTPConfig) (*
 		case "http":
 			engines = append(engines, engine.NewHTTP(httpCfg))
 		case "chromium":
-			ccfg := engine.DefaultChromiumConfig()
-			ccfg.UserAgent = httpCfg.UserAgent
+			ccfg := chromiumCfg
+			if ccfg.NavigationTimeout == 0 {
+				// Caller passed a zero ChromiumConfig — fall back to
+				// the engine defaults so we don't construct a chromium
+				// with no timeout.
+				defaults := engine.DefaultChromiumConfig()
+				if ccfg.NavigationTimeout == 0 {
+					ccfg.NavigationTimeout = defaults.NavigationTimeout
+				}
+				if ccfg.WaitAfterLoad == 0 {
+					ccfg.WaitAfterLoad = defaults.WaitAfterLoad
+				}
+				if !ccfg.Headless {
+					ccfg.Headless = defaults.Headless
+				}
+			}
+			if ccfg.UserAgent == "" {
+				ccfg.UserAgent = httpCfg.UserAgent
+			}
 			engines = append(engines, engine.NewChromium(ccfg))
 		default:
 			return nil, fmt.Errorf("unknown tier %q (supported: http, chromium)", name)

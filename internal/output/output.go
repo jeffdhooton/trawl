@@ -51,6 +51,24 @@ type Metadata struct {
 	// cross-job content cache rather than a live fetch. Set by the
 	// router when a cache hit short-circuits the tier loop.
 	FromCache bool `json:"from_cache,omitempty"`
+	// Evasion records which opt-in anti-detection features were active
+	// when the page was fetched. Nil when no evasion was used; the
+	// pointer-omitempty pattern keeps default-mode records the same
+	// size they were before evasion shipped. The presence of this
+	// field is the audit trail for "was this crawl polite or not."
+	Evasion *EvasionStats `json:"evasion,omitempty"`
+}
+
+// EvasionStats records the active anti-detection features for one
+// fetch. Populated by the engine (BrowserLike/Stealth/UserAgent) and
+// the politeness gate (JitterMS) and combined at record-build time.
+// Every field uses omitempty so partial-evasion records (e.g. jitter
+// only, no browser-like headers) stay tight in JSONL.
+type EvasionStats struct {
+	BrowserLike bool   `json:"browser_like,omitempty"`
+	Stealth     bool   `json:"stealth,omitempty"`
+	UserAgent   string `json:"user_agent,omitempty"`
+	JitterMS    int64  `json:"jitter_ms,omitempty"`
 }
 
 // DiscoveryStats records how a record's target URL was discovered when

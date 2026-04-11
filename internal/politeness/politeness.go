@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"sync"
@@ -32,6 +33,14 @@ type Config struct {
 	IgnoreRobots bool
 	// RobotsTimeout caps how long we wait when fetching robots.txt.
 	RobotsTimeout time.Duration
+	// JitterFraction is the ±fraction of the rate-limiter's base
+	// interval to add as a uniformly-random sleep after the limiter
+	// grants a token. 0.2 means each Acquire returns somewhere in
+	// [0, 1.2 * baseInterval] of extra delay (negative jitter is
+	// clipped to zero — the limiter already enforces the minimum).
+	// Zero disables jitter entirely; the Acquire fast-path skips the
+	// math and reports JitterMS == 0.
+	JitterFraction float64
 }
 
 // Default returns sane polite defaults per SPEC §3.5.
@@ -67,6 +76,11 @@ type domainState struct {
 	sem     chan struct{}
 	robots  *robotstxt.Group
 	loaded  bool
+	// jitterFrac is the ±fraction of base interval to sleep after the
+	// limiter grants a token. Resolved from the Gate's config plus any
+	// per-host override at the moment the domainState is built. Zero
+	// means "no jitter on this host."
+	jitterFrac float64
 }
 
 // NewGate builds a Gate. The httpClient is used only for fetching robots.txt;
@@ -123,13 +137,18 @@ func (g *Gate) Allowed(ctx context.Context, targetURL string) (bool, error) {
 	return ds.robots.Test(u.Path), nil
 }
 
-// Acquire blocks until the URL's domain is below both concurrency caps and
-// its rate limiter grants a token. Returns a release function that MUST be
-// called when the fetch completes (use defer).
-func (g *Gate) Acquire(ctx context.Context, targetURL string) (release func(), err error) {
+// Acquire blocks until the URL's domain is below both concurrency caps
+// and its rate limiter grants a token. When jitter is configured for
+// the host, an additional uniformly-random delay is applied AFTER the
+// limiter token to make pacing look less metronomic to behavioral
+// detectors. Returns a release function that MUST be called when the
+// fetch completes (use defer) and the jitter delay actually applied
+// in milliseconds — the cmd-layer stamps it onto the record's
+// metadata.evasion.jitter_ms.
+func (g *Gate) Acquire(ctx context.Context, targetURL string) (release func(), jitterMS int64, err error) {
 	u, err := url.Parse(targetURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse url: %w", err)
+		return nil, 0, fmt.Errorf("parse url: %w", err)
 	}
 	ds := g.stateFor(u.Host)
 
@@ -137,7 +156,7 @@ func (g *Gate) Acquire(ctx context.Context, targetURL string) (release func(), e
 	select {
 	case g.globalSem <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, 0, ctx.Err()
 	}
 
 	// Per-domain concurrency cap.
@@ -145,20 +164,60 @@ func (g *Gate) Acquire(ctx context.Context, targetURL string) (release func(), e
 	case ds.sem <- struct{}{}:
 	case <-ctx.Done():
 		<-g.globalSem
-		return nil, ctx.Err()
+		return nil, 0, ctx.Err()
 	}
 
 	// Per-domain rate limit.
 	if err := ds.limiter.Wait(ctx); err != nil {
 		<-ds.sem
 		<-g.globalSem
-		return nil, err
+		return nil, 0, err
+	}
+
+	// Optional jitter: a uniformly-random sleep on top of the rate
+	// limiter's steady-state pacing. Only paid when JitterFraction > 0
+	// — the default polite Gate skips this entirely.
+	if ds.jitterFrac > 0 {
+		jitter := jitterDelay(ds.limiter.Limit(), ds.jitterFrac)
+		if jitter > 0 {
+			t := time.NewTimer(jitter)
+			select {
+			case <-t.C:
+				jitterMS = jitter.Milliseconds()
+			case <-ctx.Done():
+				t.Stop()
+				<-ds.sem
+				<-g.globalSem
+				return nil, 0, ctx.Err()
+			}
+		}
 	}
 
 	return func() {
 		<-ds.sem
 		<-g.globalSem
-	}, nil
+	}, jitterMS, nil
+}
+
+// jitterDelay computes the jitter sleep for one Acquire call.
+// baseInterval is 1/limit (the rate limiter's steady-state period);
+// the actual sleep is uniform over [0, frac * baseInterval]. Negative
+// values aren't possible — we never SHORTEN past the limiter's pace,
+// only ADD on top of it, because shortening would defeat the polite
+// floor that's the whole point of having a rate limiter.
+//
+// rate.Inf (effectively "no rate limit") has no meaningful base
+// interval, so jitter is a no-op in that mode.
+func jitterDelay(limit rate.Limit, frac float64) time.Duration {
+	if limit <= 0 || limit == rate.Inf {
+		return 0
+	}
+	baseInterval := time.Duration(float64(time.Second) / float64(limit))
+	max := time.Duration(float64(baseInterval) * frac)
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Float64() * float64(max))
 }
 
 func (g *Gate) stateFor(host string) *domainState {
@@ -170,13 +229,14 @@ func (g *Gate) stateFor(host string) *domainState {
 	// Resolve the effective rate and per-host concurrency cap,
 	// consulting per-host rules if the Gate has any. Burst stays
 	// global for v1 — nobody has asked for per-host burst.
-	effRate, effConc := g.effectiveHostConfig(host)
+	effRate, effConc, effJitter := g.effectiveHostConfig(host)
 	if effConc <= 0 {
 		effConc = g.cfg.MaxConcurrentPerDomain
 	}
 	ds := &domainState{
-		limiter: rate.NewLimiter(effRate, g.cfg.BurstPerDomain),
-		sem:     make(chan struct{}, effConc),
+		limiter:    rate.NewLimiter(effRate, g.cfg.BurstPerDomain),
+		sem:        make(chan struct{}, effConc),
+		jitterFrac: effJitter,
 	}
 	g.byDomain[host] = ds
 	return ds

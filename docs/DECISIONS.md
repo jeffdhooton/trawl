@@ -6,6 +6,61 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-11 — Tier 1 + Tier 2 evasion: build speculatively, waive the consumer-ask rule
+
+**Decision:** Ship `--browser-like` (Tier 1: rotating UAs, Chrome
+header set, in-memory cookie jar, ±20% jitter) and `--stealth`
+(Tier 2: chromium init script patching navigator.webdriver and
+friends) without waiting for a consumer to report a hostile-target
+failure. Tier 3 (uTLS fingerprint forgery) and Tier 4 (proxy
+rotation) **stay deferred** behind their existing decision rules.
+
+**Context:** `docs/EVASION.md` §5.1 and §5.2 each specified a
+"ship when a consumer reports failure mode X" gate. The principled
+argument for those gates was that speculative evasion features
+guarantee an ad-hoc shape that embeds the first consumer's specific
+bypass. The counter-argument that won this round: Jeff has decided
+the next hostile target should hit a tool that's already ready,
+not discover the gap mid-incident. The shape was already designed
+in EVASION.md before any consumer pressure existed, so the original
+"ad-hoc shape" risk is mitigated — the doc was the design exercise,
+this PR is the build exercise.
+
+**What the data said:** N/A — explicitly speculative. The justification
+is "the design doc is mature and the cost of building Tier 1+2 is
+small." Tier 3's maintenance cost (uTLS fingerprints rotate) and
+Tier 4's scope (proxies are their own phase) keep them deferred —
+those gates are still in force.
+
+**What would change our minds (= revert to deferred):**
+
+- A consumer reports that Tier 1+2 broke against a real target in a
+  way the doc didn't anticipate, AND fixing it requires changing the
+  shape we built (not just adding a new patch to stealth.js). That's
+  evidence the speculative build encoded a wrong assumption.
+- The maintenance burden of stealth.js patches grows beyond ~200
+  lines or starts requiring per-target customization. At that point
+  we either vendor an upstream lib or refuse to chase the patch
+  treadmill (per the §5.2 "we don't fight a sophisticated arms race"
+  framing).
+
+**Implementation deviations from EVASION.md (recorded inline in
+the §5.1 / §5.2 SHIPPED subsections, summarized here):**
+
+- Cookie jar is in-memory per-job, not on-disk per-host (resolved
+  the §9 "leaning in-memory" question in favor of in-memory).
+- UA rotation is sticky-per-host (matched the §9 lean).
+- The pool excludes Firefox/Safari because their `Sec-CH-UA` headers
+  differ from Chromium's — mixing them in would create inconsistent
+  header blocks. The doc was silent on this.
+- `metadata.evasion` is a typed nested struct, not a `map[string]any`
+  (because `output.Metadata` is already a typed struct everywhere
+  else and the consistency mattered more than the doc's example
+  shape).
+- Stealth script is in-tree (~110 lines), embedded via `//go:embed`,
+  rather than vendored from `chromedp-undetected` (resolved the §9
+  question against vendoring).
+
 ## 2026-04-10 — Feature batch: crawl, map, screenshots, cache, schema, CSV, retries, politeness
 
 **Decision:** Ship eight features in a single session as a Firecrawl

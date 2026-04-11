@@ -46,6 +46,7 @@ type scrapeOpts struct {
 	retries        int
 	retryDelay     time.Duration
 	politenessPath string
+	evasion        evasionOpts
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -111,6 +112,7 @@ Use --selector name=css multiple times to extract structured fields:
 		"base delay for exponential backoff between retries (±25% jitter, capped at 10s)")
 	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
 		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
+	registerEvasionFlags(cmd, &opts.evasion)
 
 	return cmd
 }
@@ -144,11 +146,18 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	if opts.retryDelay > 0 {
 		httpCfg.RetryBaseDelay = opts.retryDelay
 	}
+	gateCfg := politeness.Default()
+	gateCfg.UserAgent = httpCfg.UserAgent
+	gateCfg.IgnoreRobots = opts.ignoreRobots
+	chromiumCfg := engine.DefaultChromiumConfig()
+	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.evasion); err != nil {
+		return err
+	}
 	tiers := parseTierList(opts.tiers)
 	if len(tiers) == 0 && opts.forceTier == "" {
 		tiers = []string{"http", "chromium"}
 	}
-	r, err := buildRouter(tiers, opts.forceTier, httpCfg)
+	r, err := buildRouter(tiers, opts.forceTier, httpCfg, chromiumCfg)
 	if err != nil {
 		return err
 	}
@@ -168,9 +177,6 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 			Msg("content cache enabled")
 	}
 
-	gateCfg := politeness.Default()
-	gateCfg.UserAgent = httpCfg.UserAgent
-	gateCfg.IgnoreRobots = opts.ignoreRobots
 	gate := politeness.NewGate(gateCfg, nil)
 	if opts.politenessPath != "" {
 		hr, err := politeness.LoadHostRules(opts.politenessPath)
@@ -184,6 +190,7 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	if opts.ignoreRobots {
 		log.Warn().Str("url", canonURL).Msg("robots.txt is being ignored")
 	}
+	logEvasion(opts.evasion)
 
 	allowed, err := gate.Allowed(ctx, canonURL)
 	if err != nil {
@@ -193,7 +200,7 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		return fmt.Errorf("blocked by robots.txt: %s", canonURL)
 	}
 
-	release, err := gate.Acquire(ctx, canonURL)
+	release, jitterMS, err := gate.Acquire(ctx, canonURL)
 	if err != nil {
 		return fmt.Errorf("politeness: %w", err)
 	}
@@ -216,7 +223,8 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		copts.schema = s
 	}
 
-	rec, routeErr := routeAndBuild(ctx, r, canonURL, rawURL, fields, copts)
+	rec, best, routeErr := routeAndBuildWithResult(ctx, r, canonURL, rawURL, fields, copts)
+	stampEvasion(&rec, best, jitterMS)
 	if err := sink.Write(rec); err != nil {
 		return fmt.Errorf("write record: %w", err)
 	}
@@ -227,6 +235,28 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		return errors.New(rec.Error)
 	}
 	return nil
+}
+
+// stampEvasion combines the engine-side evasion info (BrowserLike,
+// Stealth, UserAgent — populated by the HTTP/chromium engines on the
+// Result) with the gate-side jitter delay (measured by Acquire) and
+// writes both onto rec.Metadata.Evasion. When neither side reports
+// any evasion, rec.Metadata.Evasion stays nil and the JSONL output
+// is byte-identical to the pre-evasion default. Both inputs may be
+// zero/nil — failed fetches still get whatever evasion partial-state
+// the engine managed to record.
+func stampEvasion(rec *output.Record, best *engine.Result, jitterMS int64) {
+	hasEngine := best != nil && best.Evasion != nil
+	if !hasEngine && jitterMS == 0 {
+		return
+	}
+	stats := output.EvasionStats{JitterMS: jitterMS}
+	if hasEngine {
+		stats.BrowserLike = best.Evasion.BrowserLike
+		stats.Stealth = best.Evasion.Stealth
+		stats.UserAgent = best.Evasion.UserAgent
+	}
+	rec.Metadata.Evasion = &stats
 }
 
 func parseFieldSpecs(specs []string) ([]extract.Field, error) {

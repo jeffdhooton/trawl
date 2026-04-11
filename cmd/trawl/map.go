@@ -34,6 +34,7 @@ type mapOpts struct {
 	ratePerSec     float64
 	sitemapMax     int
 	politenessPath string
+	evasion        evasionOpts
 }
 
 func newMapCmd() *cobra.Command {
@@ -90,6 +91,7 @@ the gaps.`,
 		"cap total URLs pulled from sitemaps (0 = unlimited)")
 	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
 		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
+	registerEvasionFlags(cmd, &opts.evasion)
 
 	return cmd
 }
@@ -225,8 +227,6 @@ func openMapSink(path string) (io.Writer, func(), error) {
 func runMapCrawl(ctx context.Context, seed string, opts mapOpts, emit func(string) bool) error {
 	httpCfg := engine.DefaultHTTPConfig()
 	httpCfg.Timeout = opts.timeout
-	eng := engine.NewHTTP(httpCfg)
-	defer eng.Close()
 
 	gateCfg := politeness.Default()
 	gateCfg.UserAgent = httpCfg.UserAgent
@@ -237,6 +237,18 @@ func runMapCrawl(ctx context.Context, seed string, opts mapOpts, emit func(strin
 	if opts.concurrency > 0 {
 		gateCfg.MaxConcurrentGlobal = opts.concurrency
 	}
+	// chromiumCfg is unused here (map runs HTTP-only) but applyEvasion
+	// expects all three pointers; we pass a throwaway value so we can
+	// reuse the helper instead of duplicating its UA-strategy parsing.
+	chromiumCfg := engine.DefaultChromiumConfig()
+	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.evasion); err != nil {
+		return err
+	}
+	logEvasion(opts.evasion)
+
+	eng := engine.NewHTTP(httpCfg)
+	defer eng.Close()
+
 	gate := politeness.NewGate(gateCfg, nil)
 	if opts.politenessPath != "" {
 		hr, err := politeness.LoadHostRules(opts.politenessPath)
@@ -391,7 +403,7 @@ func fetchLinksForMap(
 	if !allowed {
 		return nil, errors.New("blocked by robots.txt")
 	}
-	release, err := gate.Acquire(ctx, targetURL)
+	release, _, err := gate.Acquire(ctx, targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("politeness: %w", err)
 	}

@@ -45,4 +45,21 @@ type Result struct {
 	// Request.WantScreenshot was set. Nil on engines that can't take one
 	// (HTTP) or when the caller didn't ask.
 	Screenshot []byte
+	// Evasion records the engine's view of which anti-detection features
+	// were active for THIS fetch (not job-wide). The HTTP engine fills it
+	// when BrowserLikeHeaders or a non-declared UserAgentStrategy ran;
+	// the chromium engine fills it when Stealth was on. Nil when nothing
+	// engine-level was active. Politeness-level jitter is stamped
+	// separately by the cmd/trawl layer because the engine doesn't see
+	// the gate's pacing decisions.
+	Evasion *EvasionInfo
+}
+
+// EvasionInfo is the engine-level slice of EvasionStats. Kept distinct
+// from output.EvasionStats so the engine package doesn't import output;
+// the cmd/trawl layer copies the fields into the record's metadata.
+type EvasionInfo struct {
+	BrowserLike bool
+	Stealth     bool
+	UserAgent   string
 }

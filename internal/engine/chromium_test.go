@@ -105,6 +105,63 @@ func TestChromiumFetchRendersJS(t *testing.T) {
 	}
 }
 
+func TestChromiumStealthHidesWebdriver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping chromium test in -short mode")
+	}
+	if !chromiumAvailable() {
+		t.Skip("chrome/chromium not found on this host")
+	}
+
+	// Page reads navigator.webdriver and renders the result into a div
+	// that the engine can scrape from the returned HTML. Without
+	// stealth, headless Chrome reports `true`. With stealth on, our
+	// init script overrides the property to `undefined`, which JS
+	// stringifies as "undefined".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`
+			<html><body>
+				<div id="result"></div>
+				<script>
+					document.getElementById('result').textContent = String(navigator.webdriver);
+				</script>
+			</body></html>
+		`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Baseline: stealth OFF — headless reports navigator.webdriver = true.
+	plain := NewChromium(DefaultChromiumConfig())
+	defer plain.Close()
+	plainRes, err := plain.Fetch(ctx, Request{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("plain Fetch: %v", err)
+	}
+	if !strings.Contains(string(plainRes.Body), `id="result">true<`) {
+		t.Errorf("baseline expected webdriver=true, got: %s", plainRes.Body)
+	}
+
+	// Stealth ON — script patches webdriver to undefined.
+	stealthCfg := DefaultChromiumConfig()
+	stealthCfg.Stealth = true
+	stealthEng := NewChromium(stealthCfg)
+	defer stealthEng.Close()
+	stealthRes, err := stealthEng.Fetch(ctx, Request{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("stealth Fetch: %v", err)
+	}
+	if !strings.Contains(string(stealthRes.Body), `id="result">undefined<`) {
+		t.Errorf("stealth expected webdriver=undefined, got: %s", stealthRes.Body)
+	}
+	if stealthRes.Evasion == nil || !stealthRes.Evasion.Stealth {
+		t.Error("Result.Evasion.Stealth not stamped on stealth fetch")
+	}
+}
+
 func TestChromiumCapturesScreenshot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping chromium test in -short mode")

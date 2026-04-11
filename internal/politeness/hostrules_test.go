@@ -183,6 +183,45 @@ func TestGateAppliesHostRuleRate(t *testing.T) {
 	}
 }
 
+func TestGateAppliesHostRuleJitter(t *testing.T) {
+	cfg := Default()
+	cfg.RatePerDomain = rate.Limit(10)
+	cfg.JitterFraction = 0 // gate default off
+	g := NewGate(cfg, nil)
+	g.WithHostRules(&HostRules{
+		Version: 1,
+		Hosts: []HostRule{
+			{Match: "jittery.example.com", Jitter: 0.5},
+		},
+	})
+
+	jittery := g.stateFor("jittery.example.com")
+	if jittery.jitterFrac != 0.5 {
+		t.Errorf("jittery host frac = %v, want 0.5", jittery.jitterFrac)
+	}
+	plain := g.stateFor("plain.example.com")
+	if plain.jitterFrac != 0 {
+		t.Errorf("plain host frac = %v, want 0 (gate default)", plain.jitterFrac)
+	}
+}
+
+func TestLoadHostRulesAcceptsJitterOnlyRule(t *testing.T) {
+	// Jitter alone should satisfy the "must override at least one
+	// field" check — pre-evasion the rule needed rate or concurrency.
+	path := writeRulesFile(t, `version: 1
+hosts:
+  - match: "example.com"
+    jitter: 0.3
+`)
+	hr, err := LoadHostRules(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hr.Hosts) != 1 || hr.Hosts[0].Jitter != 0.3 {
+		t.Errorf("rule = %+v", hr.Hosts)
+	}
+}
+
 func TestGateNoHostRulesFallsBackToGlobal(t *testing.T) {
 	cfg := Default()
 	cfg.RatePerDomain = rate.Limit(5)

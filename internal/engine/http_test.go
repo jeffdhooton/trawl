@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -81,6 +82,133 @@ func TestHTTPFetchMaxBodyBytes(t *testing.T) {
 	}
 	if len(res.Body) != 1000 {
 		t.Errorf("body size = %d, want 1000", len(res.Body))
+	}
+}
+
+func TestHTTPFetchDeclaredUserAgent(t *testing.T) {
+	var sawUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawUA = r.Header.Get("User-Agent")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	e := NewHTTP(DefaultHTTPConfig())
+	defer e.Close()
+
+	if _, err := e.Fetch(context.Background(), Request{URL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(sawUA, "trawl/") {
+		t.Errorf("UA = %q, want prefix trawl/", sawUA)
+	}
+}
+
+func TestHTTPFetchBrowserLikeHeaders(t *testing.T) {
+	var captured http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	cfg := DefaultHTTPConfig()
+	cfg.BrowserLikeHeaders = true
+	cfg.UserAgentStrategy = UAStrategyRotating
+	e := NewHTTP(cfg)
+	defer e.Close()
+
+	res, err := e.Fetch(context.Background(), Request{URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantHeaders := []string{
+		"Sec-Fetch-Site",
+		"Sec-Fetch-Mode",
+		"Sec-Fetch-Dest",
+		"Sec-Ch-Ua",
+		"Sec-Ch-Ua-Mobile",
+		"Sec-Ch-Ua-Platform",
+		"Upgrade-Insecure-Requests",
+	}
+	for _, h := range wantHeaders {
+		if captured.Get(h) == "" {
+			t.Errorf("missing browser-like header %q", h)
+		}
+	}
+	ua := captured.Get("User-Agent")
+	if !strings.Contains(ua, "Chrome") {
+		t.Errorf("rotating UA = %q, want Chrome substring", ua)
+	}
+	if res.Evasion == nil {
+		t.Fatal("Result.Evasion not stamped")
+	}
+	if !res.Evasion.BrowserLike {
+		t.Error("Evasion.BrowserLike = false, want true")
+	}
+	if res.Evasion.UserAgent != ua {
+		t.Errorf("Evasion.UserAgent = %q, want %q", res.Evasion.UserAgent, ua)
+	}
+}
+
+func TestHTTPFetchExtraHeadersOverrideBrowserLike(t *testing.T) {
+	var capturedAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAccept = r.Header.Get("Accept")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	cfg := DefaultHTTPConfig()
+	cfg.BrowserLikeHeaders = true
+	e := NewHTTP(cfg)
+	defer e.Close()
+
+	want := "application/custom"
+	hdr := http.Header{}
+	hdr.Set("Accept", want)
+	if _, err := e.Fetch(context.Background(), Request{URL: srv.URL, ExtraHeaders: hdr}); err != nil {
+		t.Fatal(err)
+	}
+	if capturedAccept != want {
+		t.Errorf("Accept = %q, want %q (caller header should win over browser-like default)", capturedAccept, want)
+	}
+}
+
+func TestHTTPFetchCookieJarPersists(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/set", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc123", Path: "/"})
+		_, _ = w.Write([]byte("set"))
+	})
+	var sawCookie string
+	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie("session"); err == nil {
+			sawCookie = c.Value
+		}
+		_, _ = w.Write([]byte("echo"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := DefaultHTTPConfig()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CookieJar = jar
+	e := NewHTTP(cfg)
+	defer e.Close()
+
+	if _, err := e.Fetch(context.Background(), Request{URL: srv.URL + "/set"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Fetch(context.Background(), Request{URL: srv.URL + "/echo"}); err != nil {
+		t.Fatal(err)
+	}
+	if sawCookie != "abc123" {
+		t.Errorf("cookie not replayed: got %q, want abc123", sawCookie)
 	}
 }
 

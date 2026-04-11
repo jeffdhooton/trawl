@@ -117,7 +117,29 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		httpCfg.RetryBaseDelay = d
 	}
 
-	r, err := buildRouter(cfg.tierList(), cfg.ForceTier, httpCfg)
+	gateCfg := politeness.Default()
+	gateCfg.UserAgent = httpCfg.UserAgent
+	gateCfg.IgnoreRobots = cfg.IgnoreRobots
+	if cfg.RatePerSec > 0 {
+		gateCfg.RatePerDomain = rate.Limit(cfg.RatePerSec)
+	}
+	if cfg.BurstPerSec > 0 {
+		gateCfg.BurstPerDomain = cfg.BurstPerSec
+	}
+	gateCfg.MaxConcurrentGlobal = cfg.Concurrency
+
+	chromiumCfg := engine.DefaultChromiumConfig()
+	jobEvasion := evasionOpts{
+		browserLike:       cfg.BrowserLike,
+		userAgentStrategy: cfg.UserAgentStrategy,
+		stealth:           cfg.Stealth,
+		noJitter:          cfg.NoJitter,
+	}
+	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, jobEvasion); err != nil {
+		return err
+	}
+
+	r, err := buildRouter(cfg.tierList(), cfg.ForceTier, httpCfg, chromiumCfg)
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
 	}
@@ -147,16 +169,6 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	}
 
 
-	gateCfg := politeness.Default()
-	gateCfg.UserAgent = httpCfg.UserAgent
-	gateCfg.IgnoreRobots = cfg.IgnoreRobots
-	if cfg.RatePerSec > 0 {
-		gateCfg.RatePerDomain = rate.Limit(cfg.RatePerSec)
-	}
-	if cfg.BurstPerSec > 0 {
-		gateCfg.BurstPerDomain = cfg.BurstPerSec
-	}
-	gateCfg.MaxConcurrentGlobal = cfg.Concurrency
 	gate := politeness.NewGate(gateCfg, nil)
 	if cfg.PolitenessPath != "" {
 		hr, err := politeness.LoadHostRules(cfg.PolitenessPath)
@@ -173,6 +185,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	if cfg.IgnoreRobots {
 		log.Warn().Msg("robots.txt is being ignored for this job")
 	}
+	logEvasion(jobEvasion)
 
 	var wg sync.WaitGroup
 	wstats := &workerStats{start: time.Now()}
@@ -419,7 +432,7 @@ func processOne(
 		return
 	}
 
-	release, err := gate.Acquire(ctx, canonURL)
+	release, jitterMS, err := gate.Acquire(ctx, canonURL)
 	if err != nil {
 		// All Acquire errors are transient from the URL's perspective:
 		// ctx cancellation, rate limiter predictive refusal ("wait would
@@ -436,6 +449,7 @@ func processOne(
 	// Crawl mode needs the raw engine result to discover links, so go
 	// through the *WithResult variant — batch mode just discards it.
 	record, best, routeErr := routeAndBuildWithResult(ctx, r, canonURL, canonURL, fields, copts)
+	stampEvasion(&record, best, jitterMS)
 
 	if ctx.Err() != nil {
 		// Caller context cancelled — every tier likely failed with a deadline

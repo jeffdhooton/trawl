@@ -1,0 +1,45 @@
+# Evasion target list — drives bench/evasion/run.sh.
+#
+# Each non-blank, non-comment line is a URL fed through trawl three
+# times: default, --browser-like, and --browser-like --stealth --tiers
+# chromium. The script captures status, body size, and final tier so
+# you can see at a glance which evasion level a target needs.
+#
+# Categorized by the tier I'd EXPECT to be needed before running.
+# Update the comments after each run with the OBSERVED tier so the
+# file becomes a living record of detection-system trends.
+#
+# **Polite warning:** these are real public URLs. Each row gets one
+# fetch per mode, so three fetches total per target. The script paces
+# itself with a 3s sleep between targets. Don't loop it. If you want
+# stress testing, point trawl at httpbin or a local fixture.
+
+# --- Tier 1 expected (UA / header gating only) -------------------------
+# Sites known to gate on User-Agent or missing Sec-Fetch-* headers.
+# Default mode usually returns 403 or a 200 with stub HTML.
+
+https://www.indeed.com/q-software-engineer-jobs.html
+https://www.glassdoor.com/Reviews/index.htm
+https://old.reddit.com/r/golang/
+https://www.crunchbase.com/organization/anthropic
+https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001318605&type=10-K
+
+# --- Tier 2 expected (chromium + stealth init script) -----------------
+# Sites where the body renders fine in real Chrome but headless Chrome
+# triggers a fingerprint check. The script-injection patches close the
+# 80% case here.
+
+https://vercel.com/pricing
+https://linear.app/pricing
+https://www.notion.so/pricing
+https://stripe.com/pricing
+https://www.g2.com/categories/data-integration
+
+# --- Tier 3+ wall (don't expect Tier 1+2 to win) -----------------------
+# Cloudflare Bot Management, DataDome, PerimeterX, etc. These rows are
+# included as a reality check: if any of them succeed in Tier 1+2 mode
+# the threat model is different from what we think.
+
+https://www.zillow.com/homes/for_sale/
+https://www.walmart.com/ip/Apple-AirPods-Pro-2nd-Generation/910081237
+https://www.bestbuy.com/site/searchpage.jsp?st=laptop

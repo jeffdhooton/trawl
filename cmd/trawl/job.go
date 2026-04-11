@@ -46,6 +46,15 @@ type JobConfig struct {
 	CacheTTL     string `json:"cache_ttl,omitempty"`
 	CachePath    string `json:"cache_path,omitempty"`
 
+	// Evasion knobs (opt-in). Persisted in config.json so resumed jobs
+	// keep the same anti-detection posture as the original run — a
+	// resumed job that mid-stream drops --browser-like would surprise
+	// the operator. See docs/EVASION.md for the tier semantics.
+	BrowserLike       bool   `json:"browser_like,omitempty"`
+	UserAgentStrategy string `json:"user_agent_strategy,omitempty"`
+	Stealth           bool   `json:"stealth,omitempty"`
+	NoJitter          bool   `json:"no_jitter,omitempty"`
+
 	// Crawl mode — set by `trawl crawl`. When CrawlMode is true, runJob
 	// uses BlockingNext, enqueues discovered children at depth+1, and
 	// terminates when the frontier reports quiescence. Batch and resume

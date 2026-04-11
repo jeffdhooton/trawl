@@ -38,6 +38,20 @@ type HTTPConfig struct {
 	// retries. Actual delay is RetryBaseDelay * 2^attempt, capped at
 	// 10 seconds, with ±25% jitter. Default: 500ms.
 	RetryBaseDelay time.Duration
+	// UserAgentStrategy controls how the per-request User-Agent is
+	// chosen. Default UAStrategyDeclared keeps the historic
+	// `trawl/<ver>` identity; the others enable Tier 1 mimicry.
+	UserAgentStrategy UserAgentStrategy
+	// BrowserLikeHeaders, when true, attaches the full Chromium
+	// header set (Sec-Fetch-*, Sec-CH-UA, Accept-Encoding, etc.) to
+	// every request instead of just Accept + Accept-Language. The
+	// chosen UA's matching client hints are emitted alongside.
+	BrowserLikeHeaders bool
+	// CookieJar, when non-nil, is attached to the shared http.Client
+	// so cookies persist across requests for the engine's lifetime.
+	// The jar is constructed by the cmd-layer (one per job) and
+	// passed in here, so per-job ownership stays explicit.
+	CookieJar http.CookieJar
 }
 
 // DefaultHTTPConfig returns production-sensible defaults.
@@ -57,8 +71,10 @@ func DefaultHTTPConfig() HTTPConfig {
 
 // HTTP is the tier-1 engine: stdlib net/http with a tuned transport.
 type HTTP struct {
-	cfg    HTTPConfig
-	client *http.Client
+	cfg       HTTPConfig
+	client    *http.Client
+	uaPicker  *UAPicker // shared sticky-per-host pool, nil when strategy != rotating
+	fixedUA   string    // used when UserAgentStrategy == UAStrategyFixed
 }
 
 // NewHTTP constructs an HTTP engine.
@@ -110,6 +126,18 @@ func NewHTTP(cfg HTTPConfig) *HTTP {
 			}
 			return nil
 		},
+	}
+	if cfg.CookieJar != nil {
+		e.client.Jar = cfg.CookieJar
+	}
+	switch cfg.UserAgentStrategy {
+	case UAStrategyRotating:
+		e.uaPicker = NewUAPicker()
+	case UAStrategyFixed:
+		// cfg.UserAgent already holds the operator-supplied string at
+		// this point — the cmd-layer parses fixed:<s> via
+		// ParseUAStrategy and writes <s> back to cfg.UserAgent.
+		e.fixedUA = cfg.UserAgent
 	}
 	return e
 }
@@ -218,10 +246,22 @@ func (e *HTTP) fetchOnce(ctx context.Context, req Request) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	hreq.Header.Set("User-Agent", e.cfg.UserAgent)
-	hreq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	hreq.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	// Resolve the User-Agent and (for browser-like mode) the matching
+	// client hints. Default path is unchanged: declared trawl UA, two
+	// polite Accept headers, and ExtraHeaders merged on top.
+	chosenUA, hints := e.resolveUA(hreq.URL.Host)
+	hreq.Header.Set("User-Agent", chosenUA)
+	if e.cfg.BrowserLikeHeaders {
+		setBrowserLikeHeaders(hreq, hints)
+	} else {
+		hreq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		hreq.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	}
+	// ExtraHeaders win over everything we just set — callers always
+	// have the last word, including over our auto-set Chrome block.
 	for k, vs := range req.ExtraHeaders {
+		hreq.Header.Del(k)
 		for _, v := range vs {
 			hreq.Header.Add(k, v)
 		}
@@ -242,7 +282,7 @@ func (e *HTTP) fetchOnce(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 
-	return &Result{
+	res := &Result{
 		URL:         req.URL,
 		FinalURL:    resp.Request.URL.String(),
 		StatusCode:  resp.StatusCode,
@@ -250,7 +290,71 @@ func (e *HTTP) fetchOnce(ctx context.Context, req Request) (*Result, error) {
 		ContentType: resp.Header.Get("Content-Type"),
 		Body:        body,
 		Duration:    time.Since(start),
-	}, nil
+	}
+	if e.cfg.BrowserLikeHeaders || e.cfg.UserAgentStrategy != UAStrategyDeclared {
+		res.Evasion = &EvasionInfo{
+			BrowserLike: e.cfg.BrowserLikeHeaders,
+			UserAgent:   chosenUA,
+		}
+	}
+	return res, nil
+}
+
+// resolveUA returns the User-Agent string the engine should send for
+// the given host plus, when the picker is active, the matching
+// ChromeUA so setBrowserLikeHeaders can emit consistent client hints.
+// For declared/fixed strategies the second return is a zero ChromeUA
+// — setBrowserLikeHeaders falls back to a static Chrome 132 hint set
+// in that case so --browser-like with --user-agent fixed:foo still
+// produces a coherent header block.
+func (e *HTTP) resolveUA(host string) (string, ChromeUA) {
+	switch e.cfg.UserAgentStrategy {
+	case UAStrategyRotating:
+		ua := e.uaPicker.Pick(host)
+		return ua.UA, ua
+	case UAStrategyFixed:
+		return e.fixedUA, ChromeUA{}
+	default:
+		return e.cfg.UserAgent, ChromeUA{}
+	}
+}
+
+// setBrowserLikeHeaders writes the full Chromium top-level-navigation
+// header block onto hreq. The Sec-CH-UA family is driven by `hints`
+// when the rotating picker provided it; otherwise we fall back to a
+// stable Chrome 132 desktop set so the operator gets a coherent
+// header block even with --user-agent fixed:<custom>.
+//
+// What we DON'T set:
+//   - Accept-Encoding. Go's net/http transparently sends `gzip` and
+//     decompresses it for us — IF the operator hasn't set the header
+//     manually. Setting it ourselves opts out of transparent
+//     decompression and leaves the body as raw compressed bytes,
+//     which broke trawl's body extraction the first time we tried.
+//     Real Chrome sends `gzip, deflate, br, zstd`; we accept that
+//     mismatch as the price of not reimplementing decompression.
+//   - Cookie (the http.Client jar handles that),
+//   - Referer (synthesizing realistic chains is the deferred follow-up),
+//   - Host (the stdlib sets it),
+//   - Connection (HTTP/2 has no concept).
+func setBrowserLikeHeaders(hreq *http.Request, hints ChromeUA) {
+	if hints.SecCHUA == "" {
+		hints = ChromeUA{
+			SecCHUA:     `"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"`,
+			SecCHUAPlat: `"macOS"`,
+			SecCHUAMob:  "?0",
+		}
+	}
+	hreq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+	hreq.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	hreq.Header.Set("Sec-Fetch-Site", "none")
+	hreq.Header.Set("Sec-Fetch-Mode", "navigate")
+	hreq.Header.Set("Sec-Fetch-User", "?1")
+	hreq.Header.Set("Sec-Fetch-Dest", "document")
+	hreq.Header.Set("Sec-Ch-Ua", hints.SecCHUA)
+	hreq.Header.Set("Sec-Ch-Ua-Mobile", hints.SecCHUAMob)
+	hreq.Header.Set("Sec-Ch-Ua-Platform", hints.SecCHUAPlat)
+	hreq.Header.Set("Upgrade-Insecure-Requests", "1")
 }
 
 // isRetryableError classifies a fetch error as transient (retry) or

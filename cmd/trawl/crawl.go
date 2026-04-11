@@ -39,6 +39,7 @@ type crawlOpts struct {
 	retries        int
 	retryDelay     time.Duration
 	politenessPath string
+	evasion        evasionOpts
 
 	// Crawl-specific knobs.
 	depth      int
@@ -119,6 +120,7 @@ Example:
 		"base delay for exponential backoff between retries (±25% jitter, capped at 10s)")
 	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
 		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
+	registerEvasionFlags(cmd, &opts.evasion)
 
 	cmd.Flags().IntVar(&opts.depth, "depth", 2,
 		"maximum BFS depth relative to the seed (seed is depth 0)")
@@ -184,6 +186,10 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		Retries:         opts.retries,
 		RetryDelay:      opts.retryDelay.String(),
 		PolitenessPath:  opts.politenessPath,
+		BrowserLike:       opts.evasion.browserLike,
+		UserAgentStrategy: opts.evasion.userAgentStrategy,
+		Stealth:           opts.evasion.stealth,
+		NoJitter:          opts.evasion.noJitter,
 		CrawlMode:       true,
 		CrawlMaxDepth:   opts.depth,
 		CrawlSameDomain: opts.sameDomain,

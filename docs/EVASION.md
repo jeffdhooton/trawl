@@ -269,6 +269,75 @@ their target site returns 403/429 specifically on `User-Agent:
 trawl/*` and serves real content on `User-Agent: Mozilla/5.0 ...`.
 Ship Tier 1 for them, not speculatively.
 
+#### SHIPPED 2026-04-11
+
+Built speculatively (without a consumer ask) on the principle
+that the next hostile target should hit a tool that's already
+ready. The decision rule above is therefore retroactively waived
+for Tier 1; the rule still gates Tiers 3+.
+
+What actually shipped, deviations from the design above:
+
+- `--browser-like`, `--user-agent <strategy>`, `--no-jitter` flags
+  on scrape, batch, crawl, and map. Consistent across all four
+  commands via the shared `cmd/trawl/evasion.go` helper.
+- `HTTPConfig.UserAgentStrategy` enum with declared / rotating /
+  fixed values, parsed by `engine.ParseUAStrategy`. The picker
+  itself lives in `internal/engine/useragent.go` with a
+  ~10-entry pool of recent Chromium-family UAs.
+- Cookie jar is **in-memory per job** (`net/http/cookiejar.New`),
+  not persisted to disk — closed the §9 question in favor of
+  the simpler option. The jar lives for the command's run and
+  is gone on exit.
+- UA rotation is **sticky per host** (the §9 lean): the first
+  fetch for a host picks one UA, and that mapping is held for
+  the engine's lifetime. The chromium-family pool excludes
+  Firefox/Safari because the matching `Sec-CH-UA` headers don't
+  apply to non-Chromium browsers and mixed entries would create
+  inconsistent header blocks.
+- Browser-like header set: `Accept`, `Accept-Language`,
+  `Accept-Encoding`, `Sec-Fetch-{Site,Mode,User,Dest}`,
+  `Sec-Ch-Ua{,-Mobile,-Platform}`, `Upgrade-Insecure-Requests`.
+  When `--user-agent fixed:<s>` overrides the rotating picker,
+  the helper falls back to a stable Chrome 132 hint set so the
+  header block stays internally consistent.
+- Jitter lives in `politeness.Gate.Acquire`. When
+  `Config.JitterFraction > 0` (set to 0.2 by `--browser-like`)
+  the acquire path adds up to ±frac × baseInterval of uniform
+  random sleep on top of the rate-limiter token. The sleep is
+  context-aware: a tight ctx deadline cuts through cleanly.
+- `HostRule.Jitter` per-host override (`internal/politeness/
+  hostrules.go`) — operators can pin individual hosts to a
+  different jitter than the gate default via the `--politeness`
+  YAML.
+- Caller-provided `req.ExtraHeaders` always win over the auto-set
+  Chrome block. The HTTP engine `Header.Del`s before re-adding so
+  the override is total, not additive.
+- `metadata.evasion` JSON shape on every record:
+  `{browser_like, stealth, user_agent, jitter_ms}`. Engine
+  populates BrowserLike/Stealth/UserAgent on `engine.Result`;
+  the cmd-layer combines that with `Acquire`'s jitterMS in
+  `cmd/trawl/scrape.go:stampEvasion`. The field is omitempty
+  pointer so default-mode records are byte-identical to the
+  pre-evasion baseline.
+- `Result.Evasion` (`internal/engine/engine.go`) is the engine-
+  side slice; output package never imports engine, so the field
+  is mirrored as `output.EvasionStats` and copied at record-build
+  time.
+
+What was deferred from this PR:
+
+- **Referer chain synthesis** — middling efficacy in §3, real
+  state-tracking complexity. Wait for a consumer hitting a
+  Referer-checking target.
+- **Soft-block telemetry** (200-but-blocked detection) — needs
+  field reports of what those responses look like before we can
+  build a heuristic without false positives.
+- **On-disk cookie persistence** — the in-memory jar covers v1.
+- **Empirical jitter shape tuning** — uniform ±20% is the
+  starting point. Revisit when there's data on what looks more
+  human to a given detector class.
+
 ### 5.2 Tier 2 — Ship after the first SPA fingerprint incident
 
 Add `--stealth` flag on scrape/batch/crawl. When chromium is
@@ -279,6 +348,53 @@ context before navigation: standard `chromedp-undetected` patches.
 real content in a real Chrome browser but not in
 `trawl crawl --tiers chromium`. Verify it's a stealth-patch-fixable
 case (not a behavioral check), then ship.
+
+#### SHIPPED 2026-04-11
+
+Built in the same speculative PR as Tier 1. Decision rule
+retroactively waived; same reasoning.
+
+What actually shipped, deviations from the design above:
+
+- `--stealth` flag on scrape/batch/crawl/map. When set, the
+  chromium engine prepends a `chromedp.ActionFunc` calling
+  `page.AddScriptToEvaluateOnNewDocument` with the embedded
+  stealth script before `chromedp.Navigate`. The script runs in
+  every new document context, including the main frame, before
+  any page script.
+- `internal/engine/stealth.js` is **maintained in-tree** (the
+  §9 alternative — vendor an upstream lib — was rejected). The
+  script is short (~110 lines) and the patches are well-known;
+  in-tree avoids drift and an extra dep. Patches included:
+  navigator.webdriver → undefined, navigator.plugins → 3-entry
+  fake list, navigator.languages → ["en-US","en"],
+  window.chrome.runtime stub, Permissions.query notification
+  override, WebGL UNMASKED_VENDOR/RENDERER → "Intel Inc." /
+  "Intel Iris OpenGL Engine", iframe.contentWindow.chrome
+  re-attach.
+- The script is embedded into the binary via `//go:embed
+  stealth.js` so the single-static-binary deploy story holds.
+- `ChromiumConfig` grew a `Stealth bool` (does the work) and
+  a `BrowserLike bool` (record-only marker so chromium-served
+  rows in a `--browser-like --stealth` job stamp `browser_like:
+  true` even though chromium itself doesn't run the Tier 1
+  header injection — chromium IS already a real browser).
+- End-to-end test in `internal/engine/chromium_test.go`:
+  `TestChromiumStealthHidesWebdriver` stands up an httptest
+  server serving a page that prints `navigator.webdriver` into
+  a div, fetches it twice (stealth off / on), and asserts the
+  div content flips from `"true"` to `"undefined"`. This is
+  the cheapest possible proof the script actually runs.
+
+What was deferred from this PR:
+
+- **Mouse / scroll event simulation** — §3 rates this low-
+  efficacy versus the cost. Revisit only if a target's
+  behavioral check fires despite the script-injection patches.
+- **Vendor catalog beyond Intel/Apple** — the WebGL strings
+  are hard-coded to a desktop integrated GPU. If a detector
+  starts cross-checking against the UA platform (e.g. expecting
+  AMD on a Linux box) we'll add a small lookup table. Not yet.
 
 ### 5.3 Tier 3 — Ship only on clear data that Tier 1+2 are insufficient
 

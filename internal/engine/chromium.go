@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"net/http"
 	"sync"
@@ -11,6 +12,14 @@ import (
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
+
+// stealthJS is the script injected before navigation when
+// ChromiumConfig.Stealth is true. See internal/engine/stealth.js for
+// the patches and EVASION.md §5.2 for what they actually defend
+// against (and what they don't).
+//
+//go:embed stealth.js
+var stealthJS string
 
 // ChromiumConfig tunes the headless Chromium engine.
 type ChromiumConfig struct {
@@ -25,6 +34,19 @@ type ChromiumConfig struct {
 	WaitAfterLoad time.Duration
 	// Headless runs chromium without a UI. Default true.
 	Headless bool
+	// Stealth, when true, injects the stealth init script before every
+	// navigation. The script patches navigator.webdriver, plugins,
+	// languages, window.chrome, WebGL strings, and the permissions
+	// shim — see internal/engine/stealth.js. Tier 2 from EVASION.md.
+	// Default false; opt-in via --stealth.
+	Stealth bool
+	// BrowserLike is a record-only marker that propagates the
+	// operator's --browser-like intent into chromium-served rows. The
+	// chromium engine doesn't actually do anything with the flag —
+	// chromium IS a real browser, so the Tier 1 header-injection
+	// dance is a no-op here — but stamping it on the result keeps
+	// metadata.evasion consistent for jobs that mix tiers.
+	BrowserLike bool
 }
 
 // DefaultChromiumConfig returns chromium defaults geared toward scraping.
@@ -169,10 +191,23 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 	capture := makeResponseCapture(browserCtx, req.URL, &status, &respHeader)
 	defer capture.stop()
 
-	actions := []chromedp.Action{
+	actions := []chromedp.Action{}
+	if c.cfg.Stealth {
+		// Inject the stealth patches before navigation. AddScript-
+		// ToEvaluateOnNewDocument is the chromium-native way to run
+		// JS on every new document context, including the main
+		// frame, before any page script. Re-arming on every Fetch
+		// is required because chromedp.NewContext gives us a fresh
+		// browser context (tab) per fetch.
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(stealthJS).Do(ctx)
+			return err
+		}))
+	}
+	actions = append(actions,
 		chromedp.Navigate(req.URL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
-	}
+	)
 	if c.cfg.WaitAfterLoad > 0 {
 		actions = append(actions, chromedp.Sleep(c.cfg.WaitAfterLoad))
 	}
@@ -226,7 +261,7 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		ct = "text/html"
 	}
 
-	return &Result{
+	res := &Result{
 		URL:         req.URL,
 		FinalURL:    finalURL,
 		StatusCode:  statusCode,
@@ -235,7 +270,15 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		Body:        []byte(html),
 		Duration:    time.Since(start),
 		Screenshot:  screenshot,
-	}, nil
+	}
+	if c.cfg.Stealth || c.cfg.BrowserLike {
+		res.Evasion = &EvasionInfo{
+			BrowserLike: c.cfg.BrowserLike,
+			Stealth:     c.cfg.Stealth,
+			UserAgent:   c.cfg.UserAgent,
+		}
+	}
+	return res, nil
 }
 
 func ctHeader(k string) bool {

@@ -41,6 +41,7 @@ type batchOpts struct {
 	retries          int
 	retryDelay       time.Duration
 	politenessPath   string
+	evasion          evasionOpts
 }
 
 func newBatchCmd() *cobra.Command {
@@ -115,6 +116,7 @@ gracefully and prints a resume command.`,
 		"base delay for exponential backoff between retries (±25% jitter, capped at 10s)")
 	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
 		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
+	registerEvasionFlags(cmd, &opts.evasion)
 
 	return cmd
 }
@@ -177,6 +179,10 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		Retries:          opts.retries,
 		RetryDelay:       opts.retryDelay.String(),
 		PolitenessPath:   opts.politenessPath,
+		BrowserLike:       opts.evasion.browserLike,
+		UserAgentStrategy: opts.evasion.userAgentStrategy,
+		Stealth:           opts.evasion.stealth,
+		NoJitter:          opts.evasion.noJitter,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

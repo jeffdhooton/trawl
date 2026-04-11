@@ -12,7 +12,7 @@ standalone CLI + library. It routes each URL through the cheapest
 engine that returns valid content. Persistent frontier, polite by
 default, single static binary.
 
-## Status (as of 2026-04-10)
+## Status (as of 2026-04-11)
 
 **Shipped:** P0 (HTTP tier, batch/scrape/resume, persistent frontier,
 politeness), P1 stage 1 (tiered router + Chromium engine), hybrid
@@ -44,17 +44,33 @@ HTTP retries with backoff (`HTTPConfig.MaxRetries` + `RetryBaseDelay`,
 retryables: net transients + 429/502/503/504; permanent: TLS/ctx/4xx
 except 429. Exponential ±25% jitter capped at 10s),
 per-host politeness (`internal/politeness/hostrules.go`, YAML rule
-file via `--politeness`, exact + `*.suffix` match, overrides rate
-and concurrency, example at `docs/examples/politeness.yaml`).
+file via `--politeness`, exact + `*.suffix` match, overrides rate,
+concurrency, and jitter, example at `docs/examples/politeness.yaml`),
+Tier 1 + Tier 2 evasion (`--browser-like` enables rotating UA + full
+Chrome header set + in-memory cookie jar + ±20% gate jitter,
+`--user-agent declared|rotating|fixed:<s>` for explicit override,
+`--stealth` injects `internal/engine/stealth.js` via
+`page.AddScriptToEvaluateOnNewDocument` patching navigator.webdriver
++ plugins + languages + WebGL + Permissions.query, `--no-jitter`
+escape hatch, all four flags shared via `cmd/trawl/evasion.go`
+helper across scrape/batch/crawl/map, sticky-per-host UA picker
+in `internal/engine/useragent.go`, gate jitter in
+`politeness.Gate.Acquire` returning `(release, jitterMS, err)`,
+`metadata.evasion = {browser_like, stealth, user_agent, jitter_ms}`
+omitempty pointer so default-mode JSONL is byte-identical to
+pre-evasion — full design + decision rules in `docs/EVASION.md`).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
 **Deferred:** Lightpanda — see DECISIONS.md for the decision rule
 and the three data points (11.4% → 4.4% → 14.08% escalation).
+Tier 3 (uTLS fingerprint forgery) and Tier 4 (proxy rotation) — see
+EVASION.md §5.3 / §5.4 for their decision rules, both still in force.
 
 **Current direction:** Open — eight phases shipped on 2026-04-10
 (BFS, URL map, screenshot, content cache, schema extract, CSV output,
-HTTP retries, per-host politeness). See `docs/ROADMAP.md` for the
-remaining deferred items.
+HTTP retries, per-host politeness), Tier 1 + Tier 2 evasion shipped
+2026-04-11 (speculatively, see DECISIONS.md). See `docs/ROADMAP.md`
+for the remaining deferred items.
 
 ## Read these first
 

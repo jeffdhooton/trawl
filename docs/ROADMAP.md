@@ -1,6 +1,6 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.1.0 shipped 2026-04-11** (first tagged release). Eight phases landed 2026-04-10 (BFS, map, screenshot, cache, schema, CSV output, HTTP retries, per-host politeness), schema validated in production via SEP's 1857-entry corpus (100% reach, 0 failures), anti-detection design doc landed, GoReleaser + install.sh + GitHub Actions release pipeline landed, v0.1.0 tagged and published with verified end-to-end distribution.
+**Current phase:** Open — **v0.1.0 shipped 2026-04-11** (first tagged release). Eight phases landed 2026-04-10 (BFS, map, screenshot, cache, schema, CSV output, HTTP retries, per-host politeness), schema validated in production via SEP's 1857-entry corpus (100% reach, 0 failures), anti-detection design doc landed, GoReleaser + install.sh + GitHub Actions release pipeline landed, v0.1.0 tagged and published with verified end-to-end distribution. **Tier 1 + Tier 2 evasion shipped 2026-04-11** (`--browser-like`, `--user-agent`, `--stealth`, `--no-jitter`, in-memory cookie jar, sticky-per-host UA rotation, ±20% timing jitter, chromium stealth init script).
 **Last updated:** 2026-04-11
 
 This doc is the single source of truth for "what's next and why." The
@@ -363,6 +363,73 @@ HTTP tier only tried once. Now retries happen inside the engine.
    on scrape/batch/crawl. Chromium doesn't get retries in v1 —
    chromedp's timeout model is different and chromium fetches
    fail less frequently from network transients.
+
+### Phase: Tier 1 + Tier 2 evasion — SHIPPED 2026-04-11
+
+Built speculatively (without a consumer ask) on the principle
+that the next hostile target should hit a tool that's already
+ready. The full design + decision rules live in `docs/EVASION.md`;
+see §5.1 / §5.2 SHIPPED subsections for implementation deviations.
+
+**What landed:**
+1. Four new flags wired across scrape/batch/crawl/map via the
+   shared `cmd/trawl/evasion.go` helper:
+   - `--browser-like` enables Tier 1 (rotating UA, full Chrome
+     header set, in-memory cookie jar, ±20% jitter on the rate
+     limiter).
+   - `--user-agent <strategy>` overrides UA picking:
+     `declared` (default trawl/<ver>), `rotating`, or
+     `fixed:<string>`.
+   - `--stealth` enables Tier 2: chromium injects an init script
+     before navigation that patches `navigator.webdriver`,
+     `navigator.plugins`, `navigator.languages`, the WebGL
+     vendor/renderer strings, and the `Permissions.query`
+     notification shim.
+   - `--no-jitter` escape hatch for deterministic pacing even
+     when `--browser-like` is on (reproducible benchmarks).
+2. Cookie jar is **in-memory per job** — `net/http/cookiejar.New`
+   on the shared http.Client, lifetime is the command run, no
+   `$TRAWL_HOME` files. Resolves the EVASION.md §9 question in
+   favor of the simpler option.
+3. UA picker (`internal/engine/useragent.go`) is **sticky per
+   host** with a ~10-entry pool of recent Chromium-family browser
+   UAs. The matching `Sec-CH-UA{,-Mobile,-Platform}` headers are
+   bundled with each pool entry so the emitted header block is
+   internally consistent. Firefox/Safari are deliberately
+   excluded from the pool because their client-hint headers
+   differ.
+4. Jitter lives in `politeness.Gate.Acquire`. When
+   `Config.JitterFraction > 0`, after the rate limiter grants a
+   token the gate sleeps for a uniformly-random delay in
+   `[0, fraction × baseInterval]`. Context-aware: a tight ctx
+   deadline cuts through. New `HostRule.Jitter` field lets
+   `--politeness` YAML pin individual hosts to non-default
+   jitter.
+5. Stealth script (`internal/engine/stealth.js`) is
+   **maintained in-tree**, embedded via `//go:embed`, and
+   prepended to chromium's action list as a
+   `page.AddScriptToEvaluateOnNewDocument` call before
+   `chromedp.Navigate`. Single static binary deploy story holds.
+6. Per-record audit trail: `metadata.evasion =
+   {browser_like, stealth, user_agent, jitter_ms}` populated
+   when any evasion was active, fully omitted otherwise. Engine
+   stamps `Result.Evasion`; cmd-layer combines with `Acquire`'s
+   `jitterMS` return in `cmd/trawl/scrape.go:stampEvasion`.
+   Default-mode JSONL output is byte-identical to pre-evasion.
+7. End-to-end test in `internal/engine/chromium_test.go`
+   (`TestChromiumStealthHidesWebdriver`) proves the script
+   actually patches `navigator.webdriver` from `true` →
+   `undefined` against an httptest server. Plus 7 other unit
+   tests covering the picker, the browser-like header set,
+   ExtraHeaders override precedence, cookie jar replay, jitter
+   add/zero/ctx semantics, and per-host jitter overrides.
+
+**Decision rules waived:** EVASION.md §5.1 and §5.2 specify
+"ship when a consumer reports failure mode X." Both were
+waived for this PR on the principled-readiness argument. The
+§5.3 (Tier 3 / uTLS) and §5.4 (Tier 4 / proxies) decision
+rules **remain in force** — those have real maintenance costs
+and deserve evidence.
 
 ### Phase: Per-host politeness overrides — SHIPPED 2026-04-10
 
