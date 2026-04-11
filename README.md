@@ -59,11 +59,26 @@ trawl resume <job-id>
 
 ## Install
 
+**One-liner** (darwin/linux, amd64/arm64 — installs to `~/.local/bin`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeffdhooton/trawl/main/scripts/install.sh | sh
+```
+
+The installer pulls the latest tagged release, verifies the SHA256
+checksum, extracts the binary to `INSTALL_DIR` (default
+`~/.local/bin`), and prints a PATH advisory if needed. Customize via
+`TRAWL_VERSION=vX.Y.Z` to pin, `INSTALL_DIR=/usr/local/bin` to
+relocate, or `TRAWL_REPO=your/fork` to install from a fork.
+
+**Via Go toolchain** (builds from source, keeps the binary's version
+string as `dev`):
+
 ```sh
 go install github.com/jeffdhooton/trawl/cmd/trawl@latest
 ```
 
-Or clone and build:
+**From a clone** (for development):
 
 ```sh
 git clone https://github.com/jeffdhooton/trawl.git
@@ -243,6 +258,9 @@ See [`docs/examples/`](docs/examples/):
   design doc. Tiered opt-in model for sites that fight back, with
   explicit refusals for CAPTCHA solvers, credential bypass, and
   other identity-changing features.
+- [`docs/RELEASING.md`](docs/RELEASING.md) — operational checklist
+  for cutting a new release. Semver policy, the full pre-flight →
+  tag → workflow → smoke-test procedure, and common gotchas.
 - [`docs/TODO.md`](docs/TODO.md) — standing commitments and open
   papercuts.
 

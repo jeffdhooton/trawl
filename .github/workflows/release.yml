@@ -1,0 +1,56 @@
+name: release
+
+# Triggered on tag push (v1.2.3, v1.2.3-rc1, etc). Builds the trawl
+# binary for darwin+linux × amd64+arm64, uploads archives to a GitHub
+# draft release. Publish the draft manually after eyeballing the
+# changelog.
+#
+# To cut a release:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# GitHub Actions needs `contents: write` to create the release. No
+# secrets beyond the default GITHUB_TOKEN. See docs/RELEASING.md for
+# the full operational checklist.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          # GoReleaser reads git history to build the changelog from the
+          # previous tag to this one. fetch-depth=0 ensures the full log
+          # is available.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Read the required Go version from go.mod so bumps in one place
+          # flow through automatically.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify build and tests pass before releasing
+        run: |
+          go build ./...
+          go test -short ./...
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

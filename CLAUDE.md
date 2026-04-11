@@ -105,6 +105,9 @@ the next session must know" in `docs/DECISIONS.md`.
 
 ```
 cmd/trawl/              cobra entrypoint, scrape/batch/crawl/map/sitemap/resume commands
+scripts/install.sh      one-liner installer end users copy-paste (pulls latest release from GitHub)
+.goreleaser.yaml        GoReleaser build matrix (darwin+linux × amd64+arm64, CGO off, ldflags version injection)
+.github/workflows/      release.yml — CI workflow triggered on v* tag push, runs tests + GoReleaser
 internal/cache/         BadgerDB-backed content cache (URL+tier → engine.Result, TTL)
 internal/canonical/     URL canonicalization + tests
 internal/engine/        HTTP + Chromium engines, Engine interface (Request.WantScreenshot)
@@ -123,6 +126,7 @@ docs/ROADMAP.md         current phase status (source of truth)
 docs/SPEC.md            original PRD — historical design intent
 docs/BENCHMARK.md       operational playbook + Lightpanda decision rule
 docs/EVASION.md         anti-detection / stealth design doc (tiered opt-in)
+docs/RELEASING.md       release checklist (semver, tag flow, smoke tests)
 docs/DECISIONS.md       architectural decision log
 docs/TODO.md            standing commitments + open papercuts
 docs/PROXIES.md         future P2 proxy planning (not yet committed in

@@ -1,0 +1,108 @@
+# GoReleaser config for trawl.
+#
+# Triggered by GitHub Actions on tag push (v*). Builds a single static
+# binary per platform, archives it as .tar.gz alongside the README and
+# key design docs, and uploads to the GitHub release.
+#
+# Hard constraints (inherited from docs/SPEC.md §7 and CLAUDE.md):
+#   - CGO_ENABLED=0. trawl ships as a single static binary; no libc
+#     dependencies. This forces modernc.org/sqlite if SQLite is ever
+#     needed (though BadgerDB is the storage default).
+#   - darwin + linux, amd64 + arm64. No Windows support. The existing
+#     code relies on Unix-style path handling and TRAWL_HOME defaults.
+#   - The Version/Commit/Date strings are injected via -ldflags into
+#     internal/version. `trawl version` reports whatever the tag was
+#     at build time. `go install` from source keeps the defaults
+#     ("dev"/"none"/"unknown").
+#
+# To cut a release locally without GitHub Actions: install goreleaser,
+# then run `goreleaser release --clean` after tagging a commit. See
+# docs/RELEASING.md §"Cutting a release with local-only GoReleaser".
+
+version: 2
+
+project_name: trawl
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: trawl
+    main: ./cmd/trawl
+    binary: trawl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/jeffdhooton/trawl/internal/version.Version={{ .Version }}
+      - -X github.com/jeffdhooton/trawl/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/jeffdhooton/trawl/internal/version.Date={{ .Date }}
+    flags:
+      - -trimpath
+
+archives:
+  - id: trawl
+    ids:
+      - trawl
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format: tar.gz
+    files:
+      - README.md
+      - docs/SPEC.md
+      - docs/ROADMAP.md
+      - docs/DECISIONS.md
+      - docs/EVASION.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  # GoReleaser generates a changelog from git commits between the previous
+  # tag and the current one. We filter out noise.
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+      - "^ci:"
+      - "^wip:"
+      - "typo"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  # GoReleaser creates the release on GitHub and uploads the artifacts.
+  # We let it draft releases so a human can eyeball the changelog before
+  # publishing. See docs/RELEASING.md for the full checklist.
+  draft: true
+  prerelease: auto
+  # Body prepended to the auto-generated changelog.
+  header: |
+    ## trawl {{ .Tag }}
+
+    Install via the one-liner:
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/jeffdhooton/trawl/main/scripts/install.sh | sh
+    ```
+
+    Or grab a binary below and drop it on your PATH.
+
+    After install, `trawl version` verifies the binary is live. See
+    [README](https://github.com/jeffdhooton/trawl#readme) for the
+    full command surface and [docs/ROADMAP.md](https://github.com/jeffdhooton/trawl/blob/main/docs/ROADMAP.md)
+    for shipped features.
