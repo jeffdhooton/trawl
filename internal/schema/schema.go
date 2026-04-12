@@ -4,7 +4,7 @@
 // shape. It's the v1 answer to "Firecrawl schema extract" without
 // any LLM in the loop.
 //
-// v1 scope (deliberately narrow):
+// v1 scope:
 //   - selector + optional attr → string
 //   - multiple: true → array of strings, or array of objects if
 //     nested fields are declared
@@ -14,14 +14,15 @@
 //     where each object needs the link's text and href" case
 //   - missing matches → field omitted from output
 //
-// NOT in v1 (easy to add when a real consumer asks):
-//   - transforms (trim, regex, number coercion)
-//   - required / optional validation
-//   - reference / include for sub-schema reuse
-//   - conditional logic, index modifiers beyond multiple
+// v2 additions:
+//   - fallback selectors: selector accepts a list of strings; first
+//     match wins
+//   - transforms: post-extraction pipeline on leaf string values
+//     (trim, regex, lowercase, uppercase, split)
 //
-// The `version: 1` field in the schema is required so a future
-// breaking change has an explicit escape hatch.
+// The `version` field in the schema is required. Version 1 and 2
+// are both supported. Version 1 schemas reject v2-only features
+// (multi-selector, transforms) at validation time.
 package schema
 
 import (
@@ -31,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -39,23 +41,97 @@ import (
 
 // Schema is the top-level structured-extraction spec.
 type Schema struct {
-	// Version is required and must be 1. Exists so a future breaking
-	// change can tell which parser to use without reinventing the
-	// schema format entirely.
-	Version int `yaml:"version" json:"version"`
-	// Fields maps output-key → Field spec. The top-level fields all
-	// operate on the document scope.
-	Fields map[string]*Field `yaml:"fields" json:"fields"`
+	Version int                `yaml:"version" json:"version"`
+	Fields  map[string]*Field  `yaml:"fields" json:"fields"`
 }
 
 // Field is one extraction rule. An empty Selector is only valid
 // inside a nested Fields block, where it means "the current iterated
 // parent element" (self).
 type Field struct {
-	Selector string            `yaml:"selector" json:"selector"`
-	Attr     string            `yaml:"attr,omitempty" json:"attr,omitempty"`
-	Multiple bool              `yaml:"multiple,omitempty" json:"multiple,omitempty"`
-	Fields   map[string]*Field `yaml:"fields,omitempty" json:"fields,omitempty"`
+	Selector   SelectorSpec       `yaml:"selector" json:"selector"`
+	Attr       string             `yaml:"attr,omitempty" json:"attr,omitempty"`
+	Multiple   bool               `yaml:"multiple,omitempty" json:"multiple,omitempty"`
+	Fields     map[string]*Field  `yaml:"fields,omitempty" json:"fields,omitempty"`
+	Transforms []Transform        `yaml:"transforms,omitempty" json:"transforms,omitempty"`
+}
+
+// SelectorSpec is a CSS selector that accepts either a single string
+// or a list of fallback selectors. First match wins during extraction.
+type SelectorSpec []string
+
+// UnmarshalYAML handles both `selector: "h1"` and `selector: ["h1", "h2"]`.
+func (s *SelectorSpec) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		*s = SelectorSpec{value.Value}
+		return nil
+	case yaml.SequenceNode:
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*s = SelectorSpec(list)
+		return nil
+	default:
+		return fmt.Errorf("selector must be a string or list of strings, got %v", value.Kind)
+	}
+}
+
+// UnmarshalJSON handles both `"selector": "h1"` and `"selector": ["h1", "h2"]`.
+func (s *SelectorSpec) UnmarshalJSON(data []byte) error {
+	// Try string first.
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*s = SelectorSpec{single}
+		return nil
+	}
+	// Try list.
+	var list []string
+	if err := json.Unmarshal(data, &list); err != nil {
+		return fmt.Errorf("selector must be a string or list of strings")
+	}
+	*s = SelectorSpec(list)
+	return nil
+}
+
+// MarshalYAML emits a bare string when the spec has exactly one entry,
+// a list otherwise. This preserves round-trip fidelity for v1 schemas.
+func (s SelectorSpec) MarshalYAML() (any, error) {
+	if len(s) == 1 {
+		return s[0], nil
+	}
+	return []string(s), nil
+}
+
+// MarshalJSON emits a bare string when the spec has exactly one entry.
+func (s SelectorSpec) MarshalJSON() ([]byte, error) {
+	if len(s) == 1 {
+		return json.Marshal(s[0])
+	}
+	return json.Marshal([]string(s))
+}
+
+// IsEmpty returns true if no selectors are defined.
+func (s SelectorSpec) IsEmpty() bool { return len(s) == 0 }
+
+// IsSelf returns true if this is a single empty-string selector (self-reference).
+func (s SelectorSpec) IsSelf() bool { return len(s) == 1 && s[0] == "" }
+
+// Transform is a post-extraction operation on a leaf string value.
+type Transform struct {
+	Type      string `yaml:"type" json:"type"`
+	Pattern   string `yaml:"pattern,omitempty" json:"pattern,omitempty"`
+	Separator string `yaml:"separator,omitempty" json:"separator,omitempty"`
+}
+
+// Known transform types.
+var knownTransforms = map[string]bool{
+	"trim":      true,
+	"regex":     true,
+	"lowercase": true,
+	"uppercase": true,
+	"split":     true,
 }
 
 // Load reads and validates a schema file. The format is detected by
@@ -91,37 +167,63 @@ func Load(path string) (*Schema, error) {
 	return &s, nil
 }
 
-// Validate enforces the v1 constraints that can't be expressed in
-// the type system:
-//   - Version must be 1.
-//   - Fields map must be non-empty.
-//   - Top-level fields must have a non-empty selector (empty selector
-//     is only meaningful inside a nested parent scope).
-//   - Nested fields may have an empty selector (self reference).
+// Validate enforces version-specific constraints.
 func (s *Schema) Validate() error {
-	if s.Version != 1 {
-		return fmt.Errorf("version %d is not supported (want 1)", s.Version)
+	if s.Version != 1 && s.Version != 2 {
+		return fmt.Errorf("version %d is not supported (want 1 or 2)", s.Version)
 	}
 	if len(s.Fields) == 0 {
 		return errors.New("schema has no fields")
 	}
 	for name, f := range s.Fields {
-		if err := validateField(name, f, true); err != nil {
+		if err := validateField(name, f, true, s.Version); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateField(path string, f *Field, topLevel bool) error {
+func validateField(path string, f *Field, topLevel bool, version int) error {
 	if f == nil {
 		return fmt.Errorf("%s: nil field", path)
 	}
-	if topLevel && f.Selector == "" {
+	if topLevel && f.Selector.IsEmpty() {
 		return fmt.Errorf("%s: top-level fields must have a non-empty selector", path)
 	}
+	if topLevel && f.Selector.IsSelf() {
+		return fmt.Errorf("%s: top-level fields must have a non-empty selector", path)
+	}
+
+	// v1 rejects v2-only features.
+	if version == 1 {
+		if len(f.Selector) > 1 {
+			return fmt.Errorf("%s: fallback selectors require version 2 (schema is version 1)", path)
+		}
+		if len(f.Transforms) > 0 {
+			return fmt.Errorf("%s: transforms require version 2 (schema is version 1)", path)
+		}
+	}
+
+	// Transforms on fields with nested sub-fields don't make sense —
+	// transforms operate on leaf string values, not objects.
+	if len(f.Transforms) > 0 && len(f.Fields) > 0 {
+		return fmt.Errorf("%s: transforms cannot be used on fields with nested sub-fields", path)
+	}
+
+	for _, t := range f.Transforms {
+		if !knownTransforms[t.Type] {
+			return fmt.Errorf("%s: unknown transform type %q", path, t.Type)
+		}
+		if t.Type == "regex" && t.Pattern == "" {
+			return fmt.Errorf("%s: regex transform requires a pattern", path)
+		}
+		if t.Type == "split" && t.Separator == "" {
+			return fmt.Errorf("%s: split transform requires a separator", path)
+		}
+	}
+
 	for childName, child := range f.Fields {
-		if err := validateField(path+"."+childName, child, false); err != nil {
+		if err := validateField(path+"."+childName, child, false, version); err != nil {
 			return err
 		}
 	}
@@ -130,7 +232,7 @@ func validateField(path string, f *Field, topLevel bool) error {
 
 // Extract runs the schema against an HTML body and returns a nested
 // map matching the schema's shape. The base URL is accepted for
-// parity with other extractors; v1 does not resolve relative URLs,
+// parity with other extractors; v1/v2 do not resolve relative URLs,
 // on purpose — consumers can join against Record.CanonicalURL.
 //
 // Fields whose selector matches nothing are omitted from the output.
@@ -146,10 +248,6 @@ func Extract(body []byte, _ string, s *Schema) (map[string]any, error) {
 	return extractFields(doc.Selection, s.Fields), nil
 }
 
-// extractFields is the recursive workhorse. scope is the goquery
-// Selection relative to which each field's selector is evaluated.
-// At the top level scope is the whole document; inside a nested
-// Multiple=true iteration scope is the single iterated element.
 func extractFields(scope *goquery.Selection, fields map[string]*Field) map[string]any {
 	out := map[string]any{}
 	for name, f := range fields {
@@ -160,34 +258,30 @@ func extractFields(scope *goquery.Selection, fields map[string]*Field) map[strin
 	return out
 }
 
-// extractField resolves one field against the given scope. Returns
-// (value, true) on a match, (nil, false) when the field has no
-// matches — the caller drops unmatched fields from the output map.
 func extractField(scope *goquery.Selection, f *Field) (any, bool) {
-	// Empty selector inside a nested context = self. "Self" here means
-	// the scope element itself, not its descendants.
 	var sel *goquery.Selection
-	if f.Selector == "" {
+
+	if f.Selector.IsSelf() {
 		sel = scope
 	} else {
-		sel = scope.Find(f.Selector)
+		// Try each fallback selector in order; use first match.
+		for _, s := range f.Selector {
+			sel = scope.Find(s)
+			if sel.Length() > 0 {
+				break
+			}
+		}
 	}
-	if sel.Length() == 0 {
+	if sel == nil || sel.Length() == 0 {
 		return nil, false
 	}
 
 	if f.Multiple {
 		return extractMultiple(sel, f), true
 	}
-	// Single-match: the first element.
 	return extractOne(sel.First(), f), true
 }
 
-// extractMultiple handles `multiple: true`. Each matched element
-// becomes either a string (when no sub-fields are declared) or an
-// object (when sub-fields ARE declared). Empty elements are kept —
-// we do not silently drop "" entries, because that would hide a
-// buggy selector.
 func extractMultiple(sel *goquery.Selection, f *Field) []any {
 	out := make([]any, 0, sel.Length())
 	sel.Each(func(_ int, s *goquery.Selection) {
@@ -196,15 +290,61 @@ func extractMultiple(sel *goquery.Selection, f *Field) []any {
 	return out
 }
 
-// extractOne turns a single Selection into either a value (attr or
-// text) or an object (when sub-fields are declared).
 func extractOne(s *goquery.Selection, f *Field) any {
 	if len(f.Fields) > 0 {
 		return extractFields(s, f.Fields)
 	}
+	var val string
 	if f.Attr != "" {
 		v, _ := s.Attr(f.Attr)
-		return strings.TrimSpace(v)
+		val = strings.TrimSpace(v)
+	} else {
+		val = strings.TrimSpace(s.Text())
 	}
-	return strings.TrimSpace(s.Text())
+	if len(f.Transforms) > 0 {
+		return applyTransforms(val, f.Transforms)
+	}
+	return val
+}
+
+// applyTransforms runs a pipeline of transforms on a string value.
+// Most transforms return a string; split returns []string. The return
+// type is `any` so the caller can store it directly in the output map.
+func applyTransforms(val string, transforms []Transform) any {
+	var result any = val
+	for _, t := range transforms {
+		s, ok := result.(string)
+		if !ok {
+			// Previous transform changed the type (e.g. split → []string).
+			// Remaining string transforms can't apply; stop the pipeline.
+			break
+		}
+		switch t.Type {
+		case "trim":
+			result = strings.TrimSpace(s)
+		case "lowercase":
+			result = strings.ToLower(s)
+		case "uppercase":
+			result = strings.ToUpper(s)
+		case "regex":
+			re, err := regexp.Compile(t.Pattern)
+			if err != nil {
+				// Bad regex at runtime — return the value unchanged.
+				continue
+			}
+			m := re.FindStringSubmatch(s)
+			if m == nil {
+				// No match — return value unchanged.
+				continue
+			}
+			if len(m) > 1 {
+				result = m[1] // first capture group
+			} else {
+				result = m[0] // full match
+			}
+		case "split":
+			result = strings.Split(s, t.Separator)
+		}
+	}
+	return result
 }

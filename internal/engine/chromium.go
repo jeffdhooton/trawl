@@ -211,6 +211,12 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 	if c.cfg.WaitAfterLoad > 0 {
 		actions = append(actions, chromedp.Sleep(c.cfg.WaitAfterLoad))
 	}
+	// User-supplied interactive actions (click, scroll, wait, etc.) run
+	// after the page has loaded and settled, before we capture the final
+	// DOM state. The HTTP engine silently ignores these.
+	if len(req.Actions) > 0 {
+		actions = append(actions, req.Actions...)
+	}
 	actions = append(actions,
 		chromedp.OuterHTML("html", &html, chromedp.ByQuery),
 		chromedp.Location(&finalURL),

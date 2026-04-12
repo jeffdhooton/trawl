@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -229,6 +230,70 @@ func TestScrapeReadabilityStripsBoilerplate(t *testing.T) {
 	// ORIGINAL body (before readability strips head).
 	if rec.Metadata.Page == nil || rec.Metadata.Page.Title == "" {
 		t.Error("metadata.page should survive even when readability is on")
+	}
+}
+
+// TestScrapeFormatJSONEmitsExtracted: --format json should populate body with
+// the JSON-serialized extracted map.
+func TestScrapeFormatJSONEmitsExtracted(t *testing.T) {
+	srv := newContentTestServer(t)
+	trawlHome := withTrawlHome(t)
+	outputFile := filepath.Join(trawlHome, "out.jsonl")
+
+	opts := scrapeOpts{
+		outputPath: outputFile,
+		timeout:    5 * time.Second,
+		tiers:      "http",
+		format:     "json",
+		selectors:  []string{"headline=h1"},
+	}
+	if err := runScrape(context.Background(), srv.URL+"/article", opts); err != nil {
+		t.Fatalf("runScrape: %v", err)
+	}
+
+	rec := readJSONL(t, outputFile)[0]
+	if rec.BodyFormat != "json" {
+		t.Errorf("body_format = %q, want json", rec.BodyFormat)
+	}
+	if rec.Body == "" {
+		t.Fatal("body should not be empty with --format json and --selector")
+	}
+	if !strings.Contains(rec.Body, "The real article headline") {
+		t.Errorf("json body should contain extracted headline, got: %s", rec.Body)
+	}
+	// Body should be valid JSON
+	var m map[string]any
+	if err := json.Unmarshal([]byte(rec.Body), &m); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if m["headline"] != "The real article headline" {
+		t.Errorf("headline = %v", m["headline"])
+	}
+}
+
+// TestScrapeFormatJSONEmptyExtracted: --format json without selectors
+// should produce an empty JSON object.
+func TestScrapeFormatJSONEmptyExtracted(t *testing.T) {
+	srv := newContentTestServer(t)
+	trawlHome := withTrawlHome(t)
+	outputFile := filepath.Join(trawlHome, "out.jsonl")
+
+	opts := scrapeOpts{
+		outputPath: outputFile,
+		timeout:    5 * time.Second,
+		tiers:      "http",
+		format:     "json",
+	}
+	if err := runScrape(context.Background(), srv.URL+"/article", opts); err != nil {
+		t.Fatalf("runScrape: %v", err)
+	}
+
+	rec := readJSONL(t, outputFile)[0]
+	if rec.BodyFormat != "json" {
+		t.Errorf("body_format = %q, want json", rec.BodyFormat)
+	}
+	if rec.Body != "{}" {
+		t.Errorf("body = %q, want {} when no selectors configured", rec.Body)
 	}
 }
 

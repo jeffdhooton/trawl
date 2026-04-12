@@ -42,6 +42,8 @@ type batchOpts struct {
 	retryDelay       time.Duration
 	politenessPath   string
 	evasion          evasionOpts
+	inlineActions    []string
+	actionsPath      string
 }
 
 func newBatchCmd() *cobra.Command {
@@ -92,7 +94,7 @@ gracefully and prints a resume command.`,
 	cmd.Flags().StringVar(&opts.tierCachePath, "tier-cache-path", "",
 		"override the default tier-cache directory ($TRAWL_HOME/tier-cache)")
 	cmd.Flags().StringVar(&opts.format, "format", "",
-		`body format in output records: "html" or "markdown". Empty omits the body field.`)
+		`body format in output records: "html", "markdown", or "json". Empty omits the body field.`)
 	cmd.Flags().BoolVar(&opts.readability, "readability", false,
 		"strip nav/footer/ads boilerplate before CSS extraction and markdown conversion")
 	cmd.Flags().BoolVar(&opts.noMetadata, "no-metadata", false,
@@ -116,6 +118,10 @@ gracefully and prints a resume command.`,
 		"base delay for exponential backoff between retries (±25% jitter, capped at 10s)")
 	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
 		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
+	cmd.Flags().StringArrayVar(&opts.inlineActions, "action", nil,
+		`pre-scrape interaction: "click:.btn", "wait:#el", "scroll:bottom", "type:#in:text", "sleep:2s", "evaluate:js" (repeatable, chromium only)`)
+	cmd.Flags().StringVar(&opts.actionsPath, "actions", "",
+		"YAML/JSON file with a sequence of pre-scrape actions (chromium only)")
 	registerEvasionFlags(cmd, &opts.evasion)
 
 	return cmd
@@ -184,6 +190,8 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		Stealth:           opts.evasion.stealth,
 		NoJitter:          opts.evasion.noJitter,
 		TLSMatch:          opts.evasion.tlsMatch,
+		InlineActions:     opts.inlineActions,
+		ActionsPath:       opts.actionsPath,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

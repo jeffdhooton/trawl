@@ -56,6 +56,11 @@ type JobConfig struct {
 	NoJitter          bool   `json:"no_jitter,omitempty"`
 	TLSMatch          string `json:"tls_match,omitempty"`
 
+	// Interactive actions (chromium only). Persisted so resumed jobs
+	// replay the same action sequence.
+	InlineActions []string `json:"inline_actions,omitempty"`
+	ActionsPath   string   `json:"actions_path,omitempty"`
+
 	// Crawl mode — set by `trawl crawl`. When CrawlMode is true, runJob
 	// uses BlockingNext, enqueues discovered children at depth+1, and
 	// terminates when the frontier reports quiescence. Batch and resume

@@ -211,6 +211,12 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		copts.schema = s
 		log.Info().Str("schema", cfg.SchemaPath).Int("fields", len(s.Fields)).Msg("schema loaded")
 	}
+	if cda, err := parseActions(cfg.InlineActions, cfg.ActionsPath); err != nil {
+		return err
+	} else if cda != nil {
+		copts.actions = cda
+		log.Info().Int("steps", len(cda)).Msg("interactive actions loaded")
+	}
 
 	// In crawl mode, build the shared crawlState and seed its enqueued
 	// counter with the current frontier Total so resumed crawls don't

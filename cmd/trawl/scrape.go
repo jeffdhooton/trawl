@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jeffdhooton/trawl/internal/action"
 	"github.com/jeffdhooton/trawl/internal/canonical"
 	"github.com/jeffdhooton/trawl/internal/engine"
 	"github.com/jeffdhooton/trawl/internal/extract"
@@ -21,6 +23,8 @@ import (
 	"github.com/jeffdhooton/trawl/internal/politeness"
 	"github.com/jeffdhooton/trawl/internal/router"
 	"github.com/jeffdhooton/trawl/internal/schema"
+
+	"github.com/chromedp/chromedp"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +51,8 @@ type scrapeOpts struct {
 	retryDelay     time.Duration
 	politenessPath string
 	evasion        evasionOpts
+	inlineActions  []string
+	actionsPath    string
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -87,7 +93,7 @@ Use --selector name=css multiple times to extract structured fields:
 	cmd.Flags().StringVar(&opts.tierCachePath, "tier-cache-path", "",
 		"override the default tier-cache directory ($TRAWL_HOME/tier-cache)")
 	cmd.Flags().StringVar(&opts.format, "format", "",
-		`body format in the output record: "html" or "markdown". Empty omits the body field.`)
+		`body format in the output record: "html", "markdown", or "json". Empty omits the body field.`)
 	cmd.Flags().BoolVar(&opts.readability, "readability", false,
 		"strip nav/footer/ads boilerplate before CSS extraction and markdown conversion")
 	cmd.Flags().BoolVar(&opts.noMetadata, "no-metadata", false,
@@ -112,6 +118,10 @@ Use --selector name=css multiple times to extract structured fields:
 		"base delay for exponential backoff between retries (±25% jitter, capped at 10s)")
 	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
 		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
+	cmd.Flags().StringArrayVar(&opts.inlineActions, "action", nil,
+		`pre-scrape interaction: "click:.btn", "wait:#el", "scroll:bottom", "type:#in:text", "sleep:2s", "evaluate:js" (repeatable, chromium only)`)
+	cmd.Flags().StringVar(&opts.actionsPath, "actions", "",
+		"YAML/JSON file with a sequence of pre-scrape actions (chromium only)")
 	registerEvasionFlags(cmd, &opts.evasion)
 
 	return cmd
@@ -222,6 +232,11 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		}
 		copts.schema = s
 	}
+	if cda, err := parseActions(opts.inlineActions, opts.actionsPath); err != nil {
+		return err
+	} else if cda != nil {
+		copts.actions = cda
+	}
 
 	rec, best, routeErr := routeAndBuildWithResult(ctx, r, canonURL, rawURL, fields, copts)
 	stampEvasion(&rec, best, jitterMS)
@@ -277,7 +292,7 @@ func parseFieldSpecs(specs []string) ([]extract.Field, error) {
 // new content-phase features (e.g. --format xml) doesn't require
 // touching every call site.
 type contentOpts struct {
-	// format is "", "html", or "markdown". Empty means "don't emit a
+	// format is "", "html", "markdown", or "json". Empty means "don't emit a
 	// body field" — preserves backward compatibility with existing
 	// JSONL consumers that never asked for one.
 	format string
@@ -299,6 +314,10 @@ type contentOpts struct {
 	// merged into Record.Extracted under the schema's field names;
 	// schema keys win on collision with --selector flat keys.
 	schema *schema.Schema
+	// actions are pre-scrape chromedp actions (click, scroll, wait,
+	// etc.) that run after page load before DOM capture. Only the
+	// chromium engine executes them; HTTP ignores them.
+	actions []chromedp.Action
 }
 
 // routeAndBuild runs one URL through the tiered router and builds the
@@ -320,6 +339,7 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 	outcome, routeErr := r.Route(ctx, engine.Request{
 		URL:            canonURL,
 		WantScreenshot: copts.screenshotDir != "",
+		Actions:        copts.actions,
 	})
 
 	// Pick the best result available for the record (success > last attempt).
@@ -432,6 +452,14 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 				rec.Body = md
 				rec.BodyFormat = "markdown"
 			}
+		case "json":
+			if rec.Extracted != nil {
+				j, _ := json.Marshal(rec.Extracted)
+				rec.Body = string(j)
+			} else {
+				rec.Body = "{}"
+			}
+			rec.BodyFormat = "json"
 		}
 	}
 
@@ -483,10 +511,10 @@ func writeScreenshot(dir, canonURL string, png []byte) (string, error) {
 // supported choices. Empty is valid and means "don't emit the body field."
 func validateFormat(format string) error {
 	switch format {
-	case "", "html", "markdown":
+	case "", "html", "markdown", "json":
 		return nil
 	default:
-		return fmt.Errorf("invalid --format %q (want html, markdown, or empty)", format)
+		return fmt.Errorf("invalid --format %q (want html, markdown, json, or empty)", format)
 	}
 }
 
@@ -501,6 +529,39 @@ func isHTML(contentType string) bool {
 func hashBody(b []byte) string {
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// parseActions combines inline --action flags and a --actions file into
+// a single []chromedp.Action slice. Returns nil when no actions are
+// configured. Inline actions run first, then file actions.
+func parseActions(inline []string, filePath string) ([]chromedp.Action, error) {
+	if len(inline) == 0 && filePath == "" {
+		return nil, nil
+	}
+
+	var seq action.Sequence
+	seq.Version = 1
+
+	for _, spec := range inline {
+		a, err := action.ParseInline(spec)
+		if err != nil {
+			return nil, fmt.Errorf("--action: %w", err)
+		}
+		seq.Actions = append(seq.Actions, a)
+	}
+
+	if filePath != "" {
+		fileSeq, err := action.Load(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("--actions: %w", err)
+		}
+		seq.Actions = append(seq.Actions, fileSeq.Actions...)
+	}
+
+	if err := seq.Validate(); err != nil {
+		return nil, fmt.Errorf("actions: %w", err)
+	}
+	return seq.ChromedpActions()
 }
 
 // exitOnCtxDone returns an error if ctx is done, else nil. Used to make

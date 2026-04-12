@@ -1,0 +1,22 @@
+version: 2
+fields:
+  stories:
+    selector: ".athing"
+    multiple: true
+    fields:
+      title:
+        selector: ".titleline > a"
+      url:
+        selector: ".titleline > a"
+        attr: "href"
+      rank:
+        selector: ".rank"
+        transforms:
+          - type: regex
+            pattern: "^(\\d+)"
+      site:
+        selector:
+          - ".sitestr"
+          - ".titleline > a"
+        transforms:
+          - type: lowercase

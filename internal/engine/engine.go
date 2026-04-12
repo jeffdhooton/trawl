@@ -8,6 +8,8 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 // Engine fetches a single URL and returns what was observed. It does not
@@ -28,6 +30,10 @@ type Request struct {
 	// full-page PNG if it can. Engines that can't produce screenshots (HTTP)
 	// silently leave Screenshot nil. Only chromium implements it today.
 	WantScreenshot bool
+	// Actions are pre-scrape interactive steps (click, scroll, wait, etc.)
+	// that run after the page loads but before DOM capture. Only the
+	// chromium engine executes them; the HTTP engine silently ignores them.
+	Actions []chromedp.Action
 }
 
 // Result is what the engine saw. It includes the raw body; higher layers
