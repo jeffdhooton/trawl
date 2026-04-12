@@ -12,86 +12,38 @@ standalone CLI + library. It routes each URL through the cheapest
 engine that returns valid content. Persistent frontier, polite by
 default, single static binary.
 
-## Status (as of 2026-04-11)
+## Status (as of 2026-04-12)
 
-**Shipped:** P0 (HTTP tier, batch/scrape/resume, persistent frontier,
-politeness), P1 stage 1 (tiered router + Chromium engine), hybrid
-discovery (`--fallback-column` + `--fallback-selector` on http_4xx /
-dns_failure), sitemap parsing (`trawl sitemap <url>`, library at
-`internal/sitemap`), per-domain tier learning (`internal/tierlearn`,
-persistent cache at `$TRAWL_HOME/tier-cache`), content extraction
-(`--format html|markdown`, `--readability`, automatic page metadata
-with Open Graph + Twitter + JSON-LD + published_at at
-`internal/extract/{metadata,markdown,readability}.go`), BFS crawl
-(`trawl crawl <url> --depth N --same-domain --limit N`, frontier
-`BlockingNext` with sync.Cond quiescence detection, `extract.AllLinks`
-for link discovery, limit caps URLs *enqueued*), URL mapping
-(`trawl map <url>` with combined sitemap + HTML-crawl sources,
-plain-text URL list to stdout, HTTP-tier-only in-memory BFS),
-screenshot output (`--screenshot-dir` writes full-page PNGs via
-`page.CaptureScreenshot` from chromium-served rows, stamps
-`metadata.screenshot_path`), content cache (`--cache` opt-in,
-BadgerDB-backed `internal/cache` keyed by URL+tier, router checks
-inside the tier loop, stamps `metadata.from_cache`), schema
-extraction (`--schema <file.yaml|.json>`, `internal/schema` package,
-nested selector/attr/multiple with empty-selector self-ref for
-array-of-objects, example at `docs/examples/sep-article.yaml`
-verified against plato.stanford.edu/entries/kant/),
-CSV/TSV output (`internal/output/csv.go`, extension-sniffed via
-`NewFile`, `--csv-columns` with dot-path lookups, auto-discovered
-extracted keys from first record),
-HTTP retries with backoff (`HTTPConfig.MaxRetries` + `RetryBaseDelay`,
-retryables: net transients + 429/502/503/504; permanent: TLS/ctx/4xx
-except 429. Exponential ±25% jitter capped at 10s),
-per-host politeness (`internal/politeness/hostrules.go`, YAML rule
-file via `--politeness`, exact + `*.suffix` match, overrides rate,
-concurrency, and jitter, example at `docs/examples/politeness.yaml`),
-Tier 1 + Tier 2 evasion (`--browser-like` enables rotating UA + full
-Chrome header set + in-memory cookie jar + ±20% gate jitter,
-`--user-agent declared|rotating|fixed:<s>` for explicit override,
-`--stealth` injects `internal/engine/stealth.js` via
-`page.AddScriptToEvaluateOnNewDocument` patching navigator.webdriver
-+ plugins + languages + WebGL + Permissions.query, `--no-jitter`
-escape hatch, all four flags shared via `cmd/trawl/evasion.go`
-helper across scrape/batch/crawl/map, sticky-per-host UA picker
-in `internal/engine/useragent.go`, gate jitter in
-`politeness.Gate.Acquire` returning `(release, jitterMS, err)`,
-`metadata.evasion = {browser_like, stealth, user_agent, jitter_ms}`
-omitempty pointer so default-mode JSONL is byte-identical to
-pre-evasion — full design + decision rules in `docs/EVASION.md`),
-Tier 3 evasion (`--tls-match chrome` forges Chrome ClientHello via
-`github.com/refraction-networking/utls` v1.8.2,
-`internal/engine/tls_utls.go` swaps only `http.Transport.DialTLSContext`
-so HTTP semantics + pooling + retries + cookies are unchanged,
-Chrome parrot via `HelloChrome_Auto` with the ALPN extension
-overridden to http/1.1 only via `UTLSIdToSpec` + `HelloCustom`
-because stdlib's h2 path requires `*tls.Conn` which uTLS UConn
-isn't — forged JA4 lands as `t13d1516h1_8daaf6152771_d8a2da3f94cd`,
-deviating from real Chrome only on the ALPN dimension, cipher
-list and extension hashes still match, `HTTPConfig.TLSRootCAs`
-field for trusting internal CAs without disabling verification,
-`engine.ValidateTLSPreset` rejects typos at flag-parse time so
-the operator never silently degrades to Go's stdlib fingerprint,
-`metadata.evasion.tls_match` stamped on forged-path records,
-quarterly maintenance commitment recorded in `docs/DECISIONS.md`
-to keep `HelloChrome_Auto` from drifting, full design in
-`docs/EVASION.md` §5.3 SHIPPED).
+**Shipped (v0.4.0):** everything below plus three new features on
+2026-04-12: `--format json` (Body = JSON-serialized Extracted map),
+v2 schema (fallback selectors via `SelectorSpec` custom unmarshaler
+accepting string-or-list, five transform types: trim/regex/lowercase/
+uppercase/split, version 1 backward-compatible, v2 features rejected
+in v1 schemas), interactive actions (`internal/action` package,
+`--action "click:.btn"` inline + `--actions file.yaml`, six verbs:
+click/wait/scroll/type/sleep/evaluate, spliced into chromium pipeline
+after page load before DOM capture, wired through JobConfig for
+resume persistence, example at `docs/examples/hn-frontpage.yaml`).
+
+**Previously shipped:** P0 (HTTP tier, batch/scrape/resume, persistent
+frontier, politeness), P1 stage 1 (tiered router + Chromium engine),
+hybrid discovery, sitemap parsing, per-domain tier learning, content
+extraction (`--format html|markdown|json`, `--readability`, automatic
+page metadata), BFS crawl, URL mapping, screenshot output, content
+cache, schema extraction (v1 + v2), CSV/TSV output, HTTP retries
+with backoff, per-host politeness, Tier 1 + Tier 2 evasion
+(`--browser-like`, `--stealth`, `--user-agent`, `--no-jitter`),
+Tier 3 evasion (`--tls-match chrome` via uTLS, http/1.1 only —
+HTTP/2 over forged TLS is next).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
-**Deferred:** Lightpanda — see DECISIONS.md for the decision rule
-and the three data points (11.4% → 4.4% → 14.08% escalation).
-Tier 4 (proxy rotation) — see `docs/PROXIES.md` and EVASION.md §5.4
-for the decision rule, still in force. Tier 3 HTTP/2 over forged TLS
-and HTTP/2 SETTINGS frame forging are documented follow-ups in
-EVASION.md §5.3 SHIPPED.
+**Deferred:** Lightpanda — see DECISIONS.md for the decision rule.
+Tier 4 (proxy rotation) — see `docs/PROXIES.md`. Tier 3 HTTP/2
+over forged TLS is the active next target (EVASION.md §5.3).
 
-**Current direction:** Open — eight phases shipped on 2026-04-10
-(BFS, URL map, screenshot, content cache, schema extract, CSV output,
-HTTP retries, per-host politeness), Tier 1 + Tier 2 evasion shipped
-2026-04-11 (speculatively, see DECISIONS.md), Tier 3 evasion
-(Chrome JA4 forgery, narrow scope) shipped 2026-04-11 (also
-speculatively, with maintenance commitment recorded). See
-`docs/ROADMAP.md` for the remaining deferred items.
+**Current direction:** HTTP/2 over forged TLS to close the last
+JA4 ALPN fingerprint gap. After that, the Firecrawl gap analysis
+is fully closed on the in-scope items. See `docs/ROADMAP.md`.
 
 ## Read these first
 
@@ -153,8 +105,9 @@ internal/failure/       Classify() — maps errors to discrete categories
 internal/frontier/      BadgerDB-backed URL queue (blocking Next for crawl)
 internal/output/        JSONL + CSV/TSV sinks, Record type, NewFile dispatcher
 internal/politeness/    robots.txt cache + per-domain rate/concurrency + per-host HostRules
+internal/action/        pre-scrape interactive actions (click/wait/scroll/type/sleep/evaluate)
 internal/router/        tiered escalation loop (w/ content cache hook)
-internal/schema/        YAML/JSON schema → nested structured extraction
+internal/schema/        YAML/JSON schema → nested structured extraction (v1 + v2)
 internal/sitemap/       sitemap.xml discovery + index recursion + gzip
 internal/stats/         per-job stats.json aggregator
 internal/validity/      heuristics for "did this page actually load"
@@ -168,7 +121,7 @@ docs/DECISIONS.md       architectural decision log
 docs/TODO.md            standing commitments + open papercuts
 docs/PROXIES.md         future P2 proxy planning (not yet committed in
                         all sessions — owned by Jeff, leave untouched)
-docs/examples/          shippable schemas + configs (sep-article.yaml, politeness.yaml)
+docs/examples/          shippable schemas + configs (sep-article.yaml, hn-frontpage.yaml, politeness.yaml)
 seed/                   benchmark test data (owned by Jeff, untouched)
 ```
 

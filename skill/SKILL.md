@@ -1,15 +1,16 @@
 ---
 name: trawl
-version: 0.1.0
+version: 0.4.0
 description: |
   Tiered web scraping for AI agents. HTTP → Chromium routing with persistent
   frontier, resumable batch jobs, BFS crawl, sitemap discovery, URL mapping,
-  clean markdown extraction, page metadata, CSS selectors, and YAML schema
-  extraction. Near-feature-parity with Firecrawl — runs as a local static
-  binary, no API key, no runtime dependency. Use when asked to "scrape",
-  "crawl", "extract pages", "get markdown from a site", "enumerate URLs",
-  "scrape a list of companies", "map a site", or anytime the task is bulk
-  content-in / clean-JSONL-out.
+  clean markdown/JSON extraction, page metadata, CSS selectors, YAML schema
+  extraction (v2: fallback selectors + transforms), and interactive pre-scrape
+  actions (click, scroll, wait, type, evaluate). Feature-parity with Firecrawl
+  on in-scope items — runs as a local static binary, no API key, no runtime
+  dependency. Use when asked to "scrape", "crawl", "extract pages", "get
+  markdown from a site", "enumerate URLs", "scrape a list of companies",
+  "map a site", or anytime the task is bulk content-in / clean-JSONL-out.
 allowed-tools:
   - Bash
   - Read
@@ -105,11 +106,13 @@ description, canonical, OG, JSON-LD), `canonical_url`, `fetched_at`, `tier`,
 `status_code`, `duration_ms`, `content_hash`, `failure_category`.
 
 **Flag cheat sheet:**
-- `--format markdown` -- HTML→markdown in the `body` field. Omit to skip body entirely.
+- `--format markdown` -- HTML→markdown in the `body` field. Also `html` or `json` (JSON-serialized extracted map). Omit to skip body entirely.
 - `--readability` -- strip nav/footer/ads before conversion or CSS extraction.
 - `--no-metadata` -- skip page metadata extraction (faster, smaller records).
 - `-o file.jsonl` -- output file (default `-` = stdout).
 - `--timeout 30s` -- HTTP request timeout.
+- `--action "click:.btn"` -- pre-scrape interaction (repeatable, chromium only). Verbs: click, wait, scroll, type, sleep, evaluate.
+- `--actions file.yaml` -- YAML/JSON file with a sequence of pre-scrape actions (chromium only).
 
 ### 2. Extract structured fields with CSS selectors
 
@@ -161,8 +164,13 @@ trawl scrape https://example.com/post \
   -o post.jsonl
 ```
 
-Reference example: `docs/examples/sep-article.yaml` in the trawl repo (Stanford
-Encyclopedia of Philosophy schema -- nested TOC, related entries, author).
+Reference examples in the trawl repo:
+- `docs/examples/sep-article.yaml` -- v1, Stanford Encyclopedia of Philosophy (nested TOC, related entries, author)
+- `docs/examples/hn-frontpage.yaml` -- v2, Hacker News front page (fallback selectors + regex transforms)
+
+**v2 schema features** (use `version: 2`):
+- **Fallback selectors**: `selector: ["#primary", "#fallback"]` -- first match wins
+- **Transforms**: post-extraction pipeline on leaf values: `trim`, `regex` (first capture group), `lowercase`, `uppercase`, `split`
 
 ### 4. Batch-scrape a URL list (resumable)
 

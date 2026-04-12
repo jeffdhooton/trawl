@@ -1,7 +1,7 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.1.0 shipped 2026-04-11** (first tagged release). Eight phases landed 2026-04-10 (BFS, map, screenshot, cache, schema, CSV output, HTTP retries, per-host politeness), schema validated in production via SEP's 1857-entry corpus (100% reach, 0 failures), anti-detection design doc landed, GoReleaser + install.sh + GitHub Actions release pipeline landed, v0.1.0 tagged and published with verified end-to-end distribution. **Tier 1 + Tier 2 evasion shipped 2026-04-11** (`--browser-like`, `--user-agent`, `--stealth`, `--no-jitter`, in-memory cookie jar, sticky-per-host UA rotation, ±20% timing jitter, chromium stealth init script). **Tier 3 evasion shipped 2026-04-11** (`--tls-match chrome` ClientHello forgery via uTLS, narrow-scope speculative ship with quarterly maintenance commitment recorded in DECISIONS.md, http/1.1 only with documented JA4 ALPN limitation).
-**Last updated:** 2026-04-11
+**Current phase:** Open — **v0.4.0 shipped 2026-04-12**. Three new features: `--format json`, v2 schema (fallback selectors + transforms), interactive actions (`--action`/`--actions`). Firecrawl gap analysis fully closed on in-scope items. Next target: HTTP/2 over forged TLS (EVASION.md §5.3).
+**Last updated:** 2026-04-12
 
 This doc is the single source of truth for "what's next and why." The
 decision log in `docs/DECISIONS.md` captures one-off architectural
@@ -46,30 +46,30 @@ non-SaaS user scraping something else, it doesn't belong here.
 
 ---
 
-## Gap analysis vs Firecrawl (as of 2026-04-10)
+## Gap analysis vs Firecrawl (as of 2026-04-12)
 
 Not all gaps are worth closing. The table maps Firecrawl's features
 against trawl's current state, scope judgment, and rough cost.
 
 | Feature                                           | Trawl today | In scope | Cost    |
 | ------------------------------------------------- | ----------- | -------- | ------- |
-| HTML → clean markdown output                       | ✅           | yes      | small   |
-| Metadata extraction (title, OG, canonical, lang)   | ✅           | yes      | small   |
-| Boilerplate/readability stripping                  | ✅           | yes      | small   |
-| BFS crawl mode (`--depth N --same-domain`)         | ✅           | yes      | medium  |
-| URL mapping (fast link discovery, no fetch)        | ✅           | yes      | small   |
-| Screenshot output                                  | ❌           | yes      | small   |
-| Screenshot output                                  | ✅           | yes      | small   |
-| Schema-based structured extraction (JSON/YAML)     | ✅           | yes      | medium  |
-| CSV / TSV output                                   | ✅           | yes      | small   |
-| HTTP retries with backoff                          | ✅           | yes      | small   |
-| Per-host politeness overrides                      | ✅           | yes      | small   |
-| Interactive actions (click, scroll, wait, execJS)  | ❌           | debatable | large |
+| HTML → clean markdown output                       | ✅           | yes      | shipped |
+| Metadata extraction (title, OG, canonical, lang)   | ✅           | yes      | shipped |
+| Boilerplate/readability stripping                  | ✅           | yes      | shipped |
+| BFS crawl mode (`--depth N --same-domain`)         | ✅           | yes      | shipped |
+| URL mapping (fast link discovery, no fetch)        | ✅           | yes      | shipped |
+| Screenshot output                                  | ✅           | yes      | shipped |
+| Schema-based structured extraction (v1 + v2)      | ✅           | yes      | shipped |
+| CSV / TSV output                                   | ✅           | yes      | shipped |
+| HTTP retries with backoff                          | ✅           | yes      | shipped |
+| Per-host politeness overrides                      | ✅           | yes      | shipped |
+| Interactive actions (click, scroll, wait, execJS)  | ✅           | yes      | shipped |
+| JSON body output (`--format json`)                 | ✅           | yes      | shipped |
+| Content caching                                    | ✅           | yes      | shipped |
 | LLM extraction                                     | ❌           | **no**   | —       |
 | Proxy rotation as a core feature                   | ❌           | P2 only  | large   |
 | Search integration                                 | ❌           | **no**   | —       |
 | Webhooks / async API                               | ❌           | **no**   | —       |
-| Content caching                                    | ✅           | yes      | medium  |
 
 **What trawl has that Firecrawl doesn't:** single static binary,
 no API key, persistent resumable frontier, tiered routing with
@@ -484,16 +484,15 @@ don't burn cycles relitigating them.
 
 ### Deferred until a concrete need arises
 
-- **Interactive actions (click, scroll, wait, execute JS before
-  extraction).** Firecrawl's `actions` feature. Technically possible
-  via chromedp but the UX is complex (recipe files?), the scope is
-  slippery, and most "wait for hydration" cases are already handled
-  implicitly by the chromium engine's current wait heuristics.
-  Revisit if a concrete workflow needs it.
 - **Proxy rotation as a core feature.** `docs/PROXIES.md` is the
   placeholder. Real proxy support changes the security story
   materially; treat it as its own P2/P3 phase when there's a
   concrete use case.
+- **HTTP/2 over forged TLS.** Active next target. `--tls-match chrome`
+  currently forces http/1.1 because uTLS's UConn isn't a `*tls.Conn`
+  that Go's h2 path requires. Real Chrome speaks h2 — closing this
+  gap makes the JA4 ALPN fingerprint indistinguishable. See
+  EVASION.md §5.3.
 
 ### Not a trawl concern at all
 
