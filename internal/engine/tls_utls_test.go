@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -16,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 func TestValidateTLSPreset(t *testing.T) {
@@ -217,4 +220,188 @@ func cipherSuitesEqual(a, b []uint16) bool {
 		}
 	}
 	return true
+}
+
+// selfSignedCert generates a self-signed TLS certificate for localhost
+// and returns the cert, the private key, and a cert pool that trusts it.
+func selfSignedCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:     []string{"localhost"},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("cert: %v", err)
+	}
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
+	parsed, _ := x509.ParseCertificate(der)
+	pool := x509.NewCertPool()
+	pool.AddCert(parsed)
+	return cert, pool
+}
+
+// startH2Server stands up a TLS server that supports HTTP/2 (and h1
+// fallback) via the standard net/http + h2 ALPN path. Returns the
+// base URL and a cleanup function.
+func startH2Server(t *testing.T, cert tls.Certificate, pool *x509.CertPool) (string, func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "proto=%s", r.Proto)
+	})
+	srv := &http.Server{
+		Handler: mux,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+			NextProtos:   []string{"h2", "http/1.1"},
+		},
+	}
+	// Use http2.ConfigureServer to wire up h2 support on the server
+	// side. Without this the server would only speak h1 even though
+	// NextProtos advertises h2.
+	if err := http2.ConfigureServer(srv, nil); err != nil {
+		t.Fatalf("h2 configure: %v", err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", srv.TLSConfig)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	url := "https://" + ln.Addr().String()
+	return url, func() { _ = srv.Close() }
+}
+
+// startH1OnlyServer stands up a TLS server that ONLY supports
+// HTTP/1.1 — no h2 ALPN. Used to verify the h1 fallback path.
+func startH1OnlyServer(t *testing.T, cert tls.Certificate) (string, func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "proto=%s", r.Proto)
+	})
+	srv := &http.Server{
+		Handler: mux,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+			NextProtos:   []string{"http/1.1"},
+		},
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", srv.TLSConfig)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	url := "https://" + ln.Addr().String()
+	return url, func() { _ = srv.Close() }
+}
+
+// TestUTLSH2Negotiation verifies that --tls-match chrome negotiates
+// HTTP/2 against an h2-capable server. This is the core test for the
+// "HTTP/2 over forged TLS" feature.
+func TestUTLSH2Negotiation(t *testing.T) {
+	cert, pool := selfSignedCert(t)
+	url, stop := startH2Server(t, cert, pool)
+	defer stop()
+
+	cfg := DefaultHTTPConfig()
+	cfg.TLSMatch = "chrome"
+	cfg.TLSRootCAs = pool
+	cfg.MaxRetries = 0
+	e := NewHTTP(cfg)
+	defer e.Close()
+
+	res, err := e.Fetch(context.Background(), Request{URL: url + "/"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", res.StatusCode)
+	}
+	// The server handler writes "proto=HTTP/2.0" when it receives h2.
+	body := string(res.Body)
+	if body != "proto=HTTP/2.0" {
+		t.Errorf("body = %q, want %q — h2 was not negotiated", body, "proto=HTTP/2.0")
+	}
+}
+
+// TestUTLSH1Fallback verifies that --tls-match chrome gracefully
+// falls back to HTTP/1.1 when the server doesn't support h2.
+func TestUTLSH1Fallback(t *testing.T) {
+	cert, pool := selfSignedCert(t)
+	url, stop := startH1OnlyServer(t, cert)
+	defer stop()
+
+	cfg := DefaultHTTPConfig()
+	cfg.TLSMatch = "chrome"
+	cfg.TLSRootCAs = pool
+	cfg.MaxRetries = 0
+	e := NewHTTP(cfg)
+	defer e.Close()
+
+	res, err := e.Fetch(context.Background(), Request{URL: url + "/"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", res.StatusCode)
+	}
+	body := string(res.Body)
+	if body != "proto=HTTP/1.1" {
+		t.Errorf("body = %q, want %q — h1 fallback failed", body, "proto=HTTP/1.1")
+	}
+}
+
+// TestUTLSALPNIncludesH2 verifies that the forged ClientHello now
+// advertises both h2 and http/1.1 in its ALPN extension (matching
+// real Chrome), not just http/1.1 like the pre-h2 implementation.
+func TestUTLSALPNIncludesH2(t *testing.T) {
+	var captured atomic.Pointer[tls.ClientHelloInfo]
+	url, pool, stop := startCapturingTLSServer(t, &captured)
+	defer stop()
+
+	cfg := DefaultHTTPConfig()
+	cfg.TLSMatch = "chrome"
+	cfg.TLSRootCAs = pool
+	cfg.MaxRetries = 0
+	e := NewHTTP(cfg)
+	defer e.Close()
+
+	// The capturing server only speaks h1, so we'll exercise the
+	// fallback path — but what matters here is the ClientHello ALPN.
+	_, _ = e.Fetch(context.Background(), Request{URL: url})
+
+	chi := captured.Load()
+	if chi == nil {
+		t.Fatal("server never observed a handshake")
+	}
+
+	hasH2 := false
+	hasH1 := false
+	for _, proto := range chi.SupportedProtos {
+		switch proto {
+		case "h2":
+			hasH2 = true
+		case "http/1.1":
+			hasH1 = true
+		}
+	}
+	if !hasH2 {
+		t.Errorf("ClientHello ALPN %v missing h2", chi.SupportedProtos)
+	}
+	if !hasH1 {
+		t.Errorf("ClientHello ALPN %v missing http/1.1", chi.SupportedProtos)
+	}
 }

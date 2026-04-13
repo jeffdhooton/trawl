@@ -11,35 +11,34 @@ import (
 	"time"
 
 	utls "github.com/refraction-networking/utls"
+	"golang.org/x/net/http2"
 )
 
 // Tier 3 evasion (per docs/EVASION.md §5.3): replace Go's stdlib TLS
 // stack with a forged Chrome ClientHello via refraction-networking/utls.
 //
-// Strategy: keep stdlib http.Transport intact (for HTTP semantics,
-// connection pooling, redirects, retries) and only swap the TLS
-// handshake by setting Transport.DialTLSContext. This is a much
-// narrower change than swapping the whole RoundTripper for utls's
-// roundtripper package — and crucially it leaves all of trawl's
-// existing http.go behavior untouched on the non-TLS code path.
+// Strategy: two-transport wrapper (h2 + h1 fallback) behind a single
+// RoundTripper. Both transports use the same uTLS dial function that
+// forges a Chrome ClientHello with the real Chrome ALPN list
+// ["h2", "http/1.1"]. After the handshake, the negotiated ALPN
+// determines which transport handles the request:
 //
-// Caveats called out in docs/EVASION.md §5.3:
+//   - h2 negotiated → golang.org/x/net/http2.Transport (frame-level h2
+//     on any net.Conn, no *tls.Conn type assertion)
+//   - h1 negotiated → stdlib http.Transport (classic HTTP/1.1 path)
+//
+// Each transport manages its own connection pool, so the routing
+// decision is per-host and amortized after the first request.
+//
+// Caveats:
 //   - HelloChrome_Auto rolls forward with the utls library, NOT with
 //     real Chrome. Quarterly verification against tls.peet.ws is the
 //     maintenance commitment recorded in DECISIONS.md.
 //   - Stale presets are reliability bugs, not feature gaps.
-//   - HTTP/2 transport is NOT shipped here. Stdlib http.Transport's
-//     auto-h2 path requires the conn returned by DialTLSContext to be
-//     a *tls.Conn; uTLS's UConn is a different type, so stdlib falls
-//     back to HTTP/1.1 framing on the wire even when ALPN negotiated
-//     h2. To prevent the resulting protocol mismatch (server expects
-//     h2 framing because ALPN said h2, client speaks HTTP/1.1) we
-//     advertise ONLY http/1.1 in our ClientHello's ALPN list. Real
-//     Chrome advertises both h2 and http/1.1, so the forged JA4
-//     differs from real Chrome by exactly one ALPN entry. This is
-//     the documented limitation; lifting it requires routing h2
-//     traffic through golang.org/x/net/http2.Transport with a
-//     custom DialTLS, which is its own follow-up.
+//   - HTTP/2 SETTINGS frame forging is a separate follow-up (§8.3).
+//     Go's x/net/http2 sends its own SETTINGS values, which differ
+//     from Chrome's. This matters only for detectors that combine
+//     TLS + SETTINGS (Akamai, Cloudflare aggressive mode).
 
 // supportedTLSPresets enumerates the preset values --tls-match accepts.
 // Centralized so the flag validator and the transport builder agree.
@@ -66,16 +65,47 @@ func ValidateTLSPreset(name string) error {
 	return nil
 }
 
-// newUTLSTransport returns an http.Transport whose TLS handshake is
-// performed by utls with the given Chrome-family preset. All other
-// transport settings mirror the stdlib transport built in NewHTTP so
-// behavior outside the handshake is unchanged.
+// errNotH2 is returned by the h2-only dialer when ALPN negotiated
+// http/1.1 instead of h2. The utlsRoundTripper catches this and
+// falls back to the h1 transport.
+var errNotH2 = errors.New("utls: ALPN did not negotiate h2")
+
+// utlsRoundTripper is a dual-protocol RoundTripper that routes each
+// request through either an HTTP/2 or HTTP/1.1 transport based on
+// what the server negotiated via ALPN. Both transports share the
+// same uTLS dial logic (forged Chrome ClientHello with the real
+// Chrome ALPN list ["h2", "http/1.1"]).
 //
-// The returned transport is safe to assign to http.Client.Transport
-// directly. Stdlib http.Transport will negotiate HTTP/2 via ALPN and
-// the forged conn's negotiated protocol — uTLS conns implement
-// tls.ConnectionState() correctly so this just works.
-func newUTLSTransport(cfg HTTPConfig, preset string) (*http.Transport, error) {
+// On the first request to a host, h2 is tried first. If the server
+// doesn't support h2 (ALPN negotiated http/1.1), the h2 dialer
+// returns errNotH2, and we fall back to the h1 transport which
+// dials its own connection. Each transport caches connections in
+// its own pool, so subsequent requests to the same host reuse the
+// established connection without extra handshakes.
+type utlsRoundTripper struct {
+	h2 *http2.Transport
+	h1 *http.Transport
+}
+
+func (rt *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.h2.RoundTrip(req)
+	if err != nil && errors.Is(err, errNotH2) {
+		return rt.h1.RoundTrip(req)
+	}
+	return resp, err
+}
+
+// CloseIdleConnections is called by http.Client.CloseIdleConnections.
+func (rt *utlsRoundTripper) CloseIdleConnections() {
+	rt.h2.CloseIdleConnections()
+	rt.h1.CloseIdleConnections()
+}
+
+// newUTLSTransport returns a RoundTripper whose TLS handshake is
+// performed by utls with the given Chrome-family preset. The returned
+// transport supports both HTTP/2 and HTTP/1.1, negotiated via ALPN
+// with the real Chrome ALPN list — no forced downgrade to h1.
+func newUTLSTransport(cfg HTTPConfig, preset string) (http.RoundTripper, error) {
 	helloID, ok := supportedTLSPresets[preset]
 	if !ok {
 		return nil, fmt.Errorf("newUTLSTransport: unsupported preset %q", preset)
@@ -86,23 +116,10 @@ func newUTLSTransport(cfg HTTPConfig, preset string) (*http.Transport, error) {
 		KeepAlive: 30 * time.Second,
 	}
 
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		MaxIdleConns:          cfg.MaxIdleConns,
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       cfg.IdleConnTimeout,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		// Intentionally HTTP/1.1 only — see the package doc above. We
-		// would normally set ForceAttemptHTTP2:true here, but stdlib's
-		// h2 path requires DialTLSContext to return a *tls.Conn (which
-		// uTLS UConn is not), so attempting h2 only causes the wire
-		// protocol to disagree with what ALPN negotiated.
-		// Plain TCP dial; uTLS handshake happens in DialTLSContext.
-		DialContext: dialer.DialContext,
-	}
-
-	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	// utlsDial performs the shared TCP connect + uTLS handshake. The
+	// Chrome parrot's real ALPN list (h2 + http/1.1) is preserved so
+	// the JA4 fingerprint is identical to real Chrome.
+	utlsDial := func(ctx context.Context, network, addr string) (*utls.UConn, error) {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, fmt.Errorf("utls dial: parse addr %q: %w", addr, err)
@@ -113,9 +130,6 @@ func newUTLSTransport(cfg HTTPConfig, preset string) (*http.Transport, error) {
 			return nil, err
 		}
 
-		// Honor any deadline already on the context for the handshake
-		// itself. Without this a slow handshake on a stuck server can
-		// outlast the caller's per-request budget.
 		if deadline, ok := ctx.Deadline(); ok {
 			if err := raw.SetDeadline(deadline); err != nil {
 				_ = raw.Close()
@@ -128,26 +142,10 @@ func newUTLSTransport(cfg HTTPConfig, preset string) (*http.Transport, error) {
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    cfg.TLSRootCAs,
 		}
-		// uTLS parrots bake their ALPN extension into the spec, so
-		// Config.NextProtos is ignored when we hand a HelloID. We need
-		// http/1.1-only ALPN (see package doc), so grab Chrome's spec,
-		// rewrite the ALPN extension, and apply via HelloCustom.
-		spec, err := utls.UTLSIdToSpec(helloID)
-		if err != nil {
-			_ = raw.Close()
-			return nil, fmt.Errorf("utls spec: %w", err)
-		}
-		for _, ext := range spec.Extensions {
-			if alpn, ok := ext.(*utls.ALPNExtension); ok {
-				alpn.AlpnProtocols = []string{"http/1.1"}
-				break
-			}
-		}
-		uconn := utls.UClient(raw, uconf, utls.HelloCustom)
-		if err := uconn.ApplyPreset(&spec); err != nil {
-			_ = uconn.Close()
-			return nil, fmt.Errorf("utls apply preset: %w", err)
-		}
+		// Use the parrot's full spec as-is — no ALPN override. This
+		// preserves Chrome's real ["h2", "http/1.1"] ALPN list so the
+		// forged JA4 is indistinguishable from real Chrome.
+		uconn := utls.UClient(raw, uconf, helloID)
 		if err := uconn.HandshakeContext(ctx); err != nil {
 			_ = uconn.Close()
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -155,11 +153,46 @@ func newUTLSTransport(cfg HTTPConfig, preset string) (*http.Transport, error) {
 			}
 			return nil, fmt.Errorf("utls handshake: %w", err)
 		}
-		// Clear the dial-time deadline once the handshake is done so
-		// per-request reads/writes use their own ctx-driven deadlines.
 		_ = raw.SetDeadline(time.Time{})
 		return uconn, nil
 	}
 
-	return transport, nil
+	// h2 transport — golang.org/x/net/http2.Transport handles frame
+	// serialization on any net.Conn; no *tls.Conn type assertion.
+	// The DialTLSContext dialer returns errNotH2 when the server
+	// negotiated http/1.1 instead of h2, so the wrapper can fall back.
+	h2t := &http2.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			uconn, err := utlsDial(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			if uconn.ConnectionState().NegotiatedProtocol != "h2" {
+				_ = uconn.Close()
+				return nil, errNotH2
+			}
+			return uconn, nil
+		},
+	}
+
+	// h1 transport — classic stdlib http.Transport for HTTP/1.1
+	// fallback. Accepts any negotiated protocol (in practice, h1).
+	h1t := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          cfg.MaxIdleConns,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       cfg.IdleConnTimeout,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DialContext:           dialer.DialContext,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			uconn, err := utlsDial(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return uconn, nil
+		},
+	}
+
+	return &utlsRoundTripper{h2: h2t, h1: h1t}, nil
 }

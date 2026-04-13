@@ -1,6 +1,6 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.4.0 shipped 2026-04-12**. Three new features: `--format json`, v2 schema (fallback selectors + transforms), interactive actions (`--action`/`--actions`). Firecrawl gap analysis fully closed on in-scope items. Next target: HTTP/2 over forged TLS (EVASION.md §5.3).
+**Current phase:** Open — **v0.4.0 shipped 2026-04-12**. Three new features: `--format json`, v2 schema (fallback selectors + transforms), interactive actions (`--action`/`--actions`). Firecrawl gap analysis fully closed on in-scope items. HTTP/2 over forged TLS shipped 2026-04-12 (EVASION.md §5.3). Next target: HTTP/2 SETTINGS frame forging (EVASION.md §8.3) or next consumer-driven feature.
 **Last updated:** 2026-04-12
 
 This doc is the single source of truth for "what's next and why." The
@@ -488,11 +488,11 @@ don't burn cycles relitigating them.
   placeholder. Real proxy support changes the security story
   materially; treat it as its own P2/P3 phase when there's a
   concrete use case.
-- **HTTP/2 over forged TLS.** Active next target. `--tls-match chrome`
-  currently forces http/1.1 because uTLS's UConn isn't a `*tls.Conn`
-  that Go's h2 path requires. Real Chrome speaks h2 — closing this
-  gap makes the JA4 ALPN fingerprint indistinguishable. See
-  EVASION.md §5.3.
+- **HTTP/2 SETTINGS frame forging.** Go's `x/net/http2` sends its
+  own SETTINGS values (INITIAL_WINDOW_SIZE, MAX_CONCURRENT_STREAMS,
+  etc.) which differ from Chrome's. Matters only for detectors that
+  combine TLS + SETTINGS (Akamai, Cloudflare aggressive). See
+  EVASION.md §8.3.
 
 ### Not a trawl concern at all
 

@@ -453,32 +453,31 @@ What actually shipped, deviations from the design above:
   "is this a known preset name." `applyEvasion` calls it before
   touching any config field so a typo fails the command.
 
-**Known limitation: HTTP/1.1 only over the forged transport.**
-Stdlib `http.Transport`'s automatic HTTP/2 upgrade requires the
-conn returned by `DialTLSContext` to be a `*tls.Conn`. uTLS's
-`UConn` is a different type, so stdlib falls back to HTTP/1.1
-framing on the wire even when ALPN negotiated h2 — which causes
-"malformed HTTP response" errors against any h2-only server.
-The fix is to override the parrot's ALPN extension to advertise
-**only** http/1.1, which we do by grabbing the Chrome spec via
-`utls.UTLSIdToSpec`, rewriting the `ALPNExtension` in place, and
-applying it via `HelloCustom`.
+**HTTP/2 over forged TLS — SHIPPED 2026-04-12.**
+The original limitation (HTTP/1.1 only, ALPN forced to
+`["http/1.1"]`) is resolved. The uTLS transport now uses a
+dual-transport `utlsRoundTripper` that wraps both a
+`golang.org/x/net/http2.Transport` (for h2) and a stdlib
+`http.Transport` (for h1 fallback). Both share the same uTLS
+dial function with Chrome's real ALPN list `["h2", "http/1.1"]`
+preserved. After the TLS handshake, the negotiated protocol
+determines routing: h2 → x/net/http2.Transport, h1 → stdlib.
+Each transport manages its own connection pool, so the routing
+decision is per-host and amortized after the first request.
 
-The cost: our forged JA4 is `t13d1516h1_...` (h1 ALPN) where
-real Chrome's would be `t13d1516h2_...` (h2 ALPN). Cipher list,
-extensions, signature algorithms, and supported groups all match
-Chrome exactly; only the ALPN protocol marker differs. A strict
-JA4 detector that hashes on the full string will see "Chrome
-but http/1.1-only," which is still distinguishable from Go
-stdlib (`t13d1312h2_...`) but not identical to real Chrome.
+The forged JA4 is now `t13d1516h2_...` — indistinguishable from
+real Chrome on every dimension: cipher list, extensions, signature
+algorithms, supported groups, AND ALPN protocol marker.
 
-Lifting this limitation requires routing h2 traffic through
-`golang.org/x/net/http2.Transport` with a custom DialTLS — its
-own follow-up PR with a new test surface. Not shipped here.
+For h1-only servers, the first request burns one extra TCP+TLS
+handshake (the h2 dialer dials, sees ALPN says h1, returns
+`errNotH2`, the h1 dialer dials again). Subsequent requests to
+the same host hit the h1 pool with zero waste. Most modern sites
+negotiate h2, so the fallback is rare.
 
-**HTTP/2 SETTINGS frame forging is also still deferred** per
-§8.3 — that's the *next* layer after this PR closes the JA4
-forgery question, and only matters for detectors that combine
+**HTTP/2 SETTINGS frame forging is still deferred** per §8.3 —
+Go's `x/net/http2` sends its own SETTINGS values, which differ
+from Chrome's. This matters only for detectors that combine
 TLS+SETTINGS (e.g., Akamai, Cloudflare's most aggressive mode).
 
 **Cipher-list verification:** an end-to-end test in
@@ -501,15 +500,15 @@ jq -r '.body' /tmp/peet.jsonl | jq '{ja3_hash:.tls.ja3_hash, ja4:.tls.ja4}'
 
 Compare to a baseline run without `--tls-match`. A real forgery
 shows different `ja3_hash` and `ja4` values; the chrome path's
-JA4 should start with `t13d1516h1_` (16-cipher Chrome with h1
-ALPN). Quarterly verification against this is the maintenance
-commitment recorded in DECISIONS.md.
+JA4 should start with `t13d1516h2_` (16-cipher Chrome with h2
+ALPN — matching real Chrome exactly). Quarterly verification
+against this is the maintenance commitment recorded in
+DECISIONS.md.
 
-What was deferred from this PR:
+What remains deferred:
 
 - **Safari / Firefox / iOS / Android presets.** uTLS supports
   them; we ship only Chrome until a second consumer asks.
-- **HTTP/2 over forged TLS.** See limitation above.
 - **HTTP/2 SETTINGS frame forging.** Separate decision rule;
   haven't seen evidence it's needed.
 - **Header order forging.** Pointless on h2 (HPACK has no

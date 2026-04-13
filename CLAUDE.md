@@ -33,17 +33,19 @@ page metadata), BFS crawl, URL mapping, screenshot output, content
 cache, schema extraction (v1 + v2), CSV/TSV output, HTTP retries
 with backoff, per-host politeness, Tier 1 + Tier 2 evasion
 (`--browser-like`, `--stealth`, `--user-agent`, `--no-jitter`),
-Tier 3 evasion (`--tls-match chrome` via uTLS, http/1.1 only —
-HTTP/2 over forged TLS is next).
+Tier 3 evasion (`--tls-match chrome` via uTLS, now with full
+HTTP/2 support via dual-transport `utlsRoundTripper` using
+`golang.org/x/net/http2.Transport` — JA4 fingerprint is
+indistinguishable from real Chrome).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
 **Deferred:** Lightpanda — see DECISIONS.md for the decision rule.
-Tier 4 (proxy rotation) — see `docs/PROXIES.md`. Tier 3 HTTP/2
-over forged TLS is the active next target (EVASION.md §5.3).
+Tier 4 (proxy rotation) — see `docs/PROXIES.md`. HTTP/2 SETTINGS
+frame forging (EVASION.md §8.3) — only matters for detectors that
+combine TLS + SETTINGS.
 
-**Current direction:** HTTP/2 over forged TLS to close the last
-JA4 ALPN fingerprint gap. After that, the Firecrawl gap analysis
-is fully closed on the in-scope items. See `docs/ROADMAP.md`.
+**Current direction:** Firecrawl gap analysis fully closed on
+in-scope items. See `docs/ROADMAP.md` for next targets.
 
 ## Read these first
 
