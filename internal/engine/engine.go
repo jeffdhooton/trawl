@@ -72,4 +72,5 @@ type EvasionInfo struct {
 	// Tier 3 evasion swapped the HTTP engine's transport. Empty when
 	// the stdlib transport handled this fetch.
 	TLSMatch string
+	Proxy    bool
 }

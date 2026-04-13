@@ -178,7 +178,7 @@ func newUTLSTransport(cfg HTTPConfig, preset string) (http.RoundTripper, error) 
 	// h1 transport — classic stdlib http.Transport for HTTP/1.1
 	// fallback. Accepts any negotiated protocol (in practice, h1).
 	h1t := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 cfg.proxyOrDefault(),
 		MaxIdleConns:          cfg.MaxIdleConns,
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       cfg.IdleConnTimeout,

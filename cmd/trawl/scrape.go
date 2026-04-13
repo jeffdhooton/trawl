@@ -50,6 +50,7 @@ type scrapeOpts struct {
 	retries        int
 	retryDelay     time.Duration
 	politenessPath string
+	proxy          proxyOpts
 	evasion        evasionOpts
 	inlineActions  []string
 	actionsPath    string
@@ -122,6 +123,7 @@ Use --selector name=css multiple times to extract structured fields:
 		`pre-scrape interaction: "click:.btn", "wait:#el", "scroll:bottom", "type:#in:text", "sleep:2s", "evaluate:js" (repeatable, chromium only)`)
 	cmd.Flags().StringVar(&opts.actionsPath, "actions", "",
 		"YAML/JSON file with a sequence of pre-scrape actions (chromium only)")
+	registerProxyFlags(cmd, &opts.proxy)
 	registerEvasionFlags(cmd, &opts.evasion)
 
 	return cmd
@@ -163,6 +165,9 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.evasion); err != nil {
 		return err
 	}
+	if err := applyProxy(&httpCfg, &chromiumCfg, opts.proxy); err != nil {
+		return err
+	}
 	tiers := parseTierList(opts.tiers)
 	if len(tiers) == 0 && opts.forceTier == "" {
 		tiers = []string{"http", "chromium"}
@@ -201,6 +206,7 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		log.Warn().Str("url", canonURL).Msg("robots.txt is being ignored")
 	}
 	logEvasion(opts.evasion)
+	logProxy(opts.proxy)
 
 	allowed, err := gate.Allowed(ctx, canonURL)
 	if err != nil {
@@ -271,6 +277,7 @@ func stampEvasion(rec *output.Record, best *engine.Result, jitterMS int64) {
 		stats.Stealth = best.Evasion.Stealth
 		stats.UserAgent = best.Evasion.UserAgent
 		stats.TLSMatch = best.Evasion.TLSMatch
+		stats.Proxy = best.Evasion.Proxy
 	}
 	rec.Metadata.Evasion = &stats
 }

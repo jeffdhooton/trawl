@@ -14,16 +14,11 @@ default, single static binary.
 
 ## Status (as of 2026-04-12)
 
-**Shipped (v0.4.0):** everything below plus three new features on
-2026-04-12: `--format json` (Body = JSON-serialized Extracted map),
-v2 schema (fallback selectors via `SelectorSpec` custom unmarshaler
-accepting string-or-list, five transform types: trim/regex/lowercase/
-uppercase/split, version 1 backward-compatible, v2 features rejected
-in v1 schemas), interactive actions (`internal/action` package,
-`--action "click:.btn"` inline + `--actions file.yaml`, six verbs:
-click/wait/scroll/type/sleep/evaluate, spliced into chromium pipeline
-after page load before DOM capture, wired through JobConfig for
-resume persistence, example at `docs/examples/hn-frontpage.yaml`).
+**Shipped (v0.5.0):** proxy support — `--proxy <url>` for a single
+gateway, `--proxy-file <path>` for a rotating pool with per-domain-
+sticky assignment. Works on HTTP, uTLS, and chromium tiers.
+`metadata.evasion.proxy: true` stamped on proxied records. Persisted
+in JobConfig for resume.
 
 **Previously shipped:** P0 (HTTP tier, batch/scrape/resume, persistent
 frontier, politeness), P1 stage 1 (tiered router + Chromium engine),
@@ -31,21 +26,19 @@ hybrid discovery, sitemap parsing, per-domain tier learning, content
 extraction (`--format html|markdown|json`, `--readability`, automatic
 page metadata), BFS crawl, URL mapping, screenshot output, content
 cache, schema extraction (v1 + v2), CSV/TSV output, HTTP retries
-with backoff, per-host politeness, Tier 1 + Tier 2 evasion
-(`--browser-like`, `--stealth`, `--user-agent`, `--no-jitter`),
-Tier 3 evasion (`--tls-match chrome` via uTLS, now with full
-HTTP/2 support via dual-transport `utlsRoundTripper` using
-`golang.org/x/net/http2.Transport` — JA4 fingerprint is
-indistinguishable from real Chrome).
+with backoff, per-host politeness, Tier 1–3 evasion (`--browser-like`,
+`--stealth`, `--tls-match chrome` with full HTTP/2 via uTLS),
+`--format json`, interactive actions (`--action`/`--actions`),
+agentic hardening (chromium launch timeout, body size cap, router
+ctx propagation, debug progress logs).
 
 **Working tiers:** HTTP (net/http + goquery) and Chromium (chromedp).
-**Deferred:** Lightpanda — see DECISIONS.md for the decision rule.
-Tier 4 (proxy rotation) — see `docs/PROXIES.md`. HTTP/2 SETTINGS
-frame forging (EVASION.md §8.3) — only matters for detectors that
-combine TLS + SETTINGS.
+**Deferred:** Lightpanda — closed by Run D data (10.54% on n=579,
+below 15% threshold). HTTP/2 SETTINGS frame forging (EVASION.md
+§8.3) — only matters for TLS + SETTINGS combo detectors.
 
-**Current direction:** Firecrawl gap analysis fully closed on
-in-scope items. See `docs/ROADMAP.md` for next targets.
+**Current direction:** proxy support shipped. Next targets are
+consumer-driven. See `docs/ROADMAP.md`.
 
 ## Read these first
 

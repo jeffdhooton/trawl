@@ -34,6 +34,7 @@ type mapOpts struct {
 	ratePerSec     float64
 	sitemapMax     int
 	politenessPath string
+	proxy          proxyOpts
 	evasion        evasionOpts
 }
 
@@ -91,6 +92,7 @@ the gaps.`,
 		"cap total URLs pulled from sitemaps (0 = unlimited)")
 	cmd.Flags().StringVar(&opts.politenessPath, "politeness", "",
 		"YAML file with per-host rate/concurrency overrides (see docs/examples/politeness.yaml)")
+	registerProxyFlags(cmd, &opts.proxy)
 	registerEvasionFlags(cmd, &opts.evasion)
 
 	return cmd
@@ -244,7 +246,11 @@ func runMapCrawl(ctx context.Context, seed string, opts mapOpts, emit func(strin
 	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.evasion); err != nil {
 		return err
 	}
+	if err := applyProxy(&httpCfg, &chromiumCfg, opts.proxy); err != nil {
+		return err
+	}
 	logEvasion(opts.evasion)
+	logProxy(opts.proxy)
 
 	eng := engine.NewHTTP(httpCfg)
 	defer eng.Close()

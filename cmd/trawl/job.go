@@ -46,6 +46,11 @@ type JobConfig struct {
 	CacheTTL     string `json:"cache_ttl,omitempty"`
 	CachePath    string `json:"cache_path,omitempty"`
 
+	// Proxy knobs (opt-in). Persisted so resumed jobs route through the
+	// same proxy as the original run.
+	ProxyURL  string `json:"proxy_url,omitempty"`
+	ProxyFile string `json:"proxy_file,omitempty"`
+
 	// Evasion knobs (opt-in). Persisted in config.json so resumed jobs
 	// keep the same anti-detection posture as the original run — a
 	// resumed job that mid-stream drops --browser-like would surprise

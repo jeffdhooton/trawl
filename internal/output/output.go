@@ -73,6 +73,7 @@ type EvasionStats struct {
 	// Tier 3 evasion forged the ClientHello for this fetch. Empty
 	// when the stdlib transport handled it.
 	TLSMatch string `json:"tls_match,omitempty"`
+	Proxy    bool   `json:"proxy,omitempty"`
 }
 
 // DiscoveryStats records how a record's target URL was discovered when

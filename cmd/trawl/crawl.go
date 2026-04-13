@@ -39,6 +39,7 @@ type crawlOpts struct {
 	retries        int
 	retryDelay     time.Duration
 	politenessPath string
+	proxy          proxyOpts
 	evasion        evasionOpts
 	inlineActions  []string
 	actionsPath    string
@@ -126,6 +127,7 @@ Example:
 		`pre-scrape interaction: "click:.btn", "wait:#el", "scroll:bottom", "type:#in:text", "sleep:2s", "evaluate:js" (repeatable, chromium only)`)
 	cmd.Flags().StringVar(&opts.actionsPath, "actions", "",
 		"YAML/JSON file with a sequence of pre-scrape actions (chromium only)")
+	registerProxyFlags(cmd, &opts.proxy)
 	registerEvasionFlags(cmd, &opts.evasion)
 
 	cmd.Flags().IntVar(&opts.depth, "depth", 2,
@@ -192,6 +194,8 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		Retries:         opts.retries,
 		RetryDelay:      opts.retryDelay.String(),
 		PolitenessPath:  opts.politenessPath,
+		ProxyURL:          opts.proxy.proxyURL,
+		ProxyFile:         opts.proxy.proxyFile,
 		BrowserLike:       opts.evasion.browserLike,
 		UserAgentStrategy: opts.evasion.userAgentStrategy,
 		Stealth:           opts.evasion.stealth,

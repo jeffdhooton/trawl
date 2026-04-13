@@ -159,6 +159,11 @@ suitable for copying onto a $5 VPS.
   keys from the first record; `--csv-columns` overrides with explicit
   dot-paths. Nested values get JSON-encoded inline so cells stay
   single-valued.
+- **Proxy support.** `--proxy http://user:pass@host:port` routes all
+  requests through a gateway proxy. `--proxy-file proxies.txt` loads
+  a pool and assigns each target domain to a fixed proxy (per-domain-
+  sticky rotation). Works on HTTP, uTLS, and chromium tiers. Proxied
+  records are stamped with `metadata.evasion.proxy: true`.
 - **Failure classification + stats.** Every job emits a `stats.json`
   with reachable/unreachable counts, per-category failure breakdown,
   per-tier latency, chromium escalation rate, and fallback yield.

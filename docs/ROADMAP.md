@@ -1,6 +1,6 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.4.0 shipped 2026-04-12**. Three new features: `--format json`, v2 schema (fallback selectors + transforms), interactive actions (`--action`/`--actions`). Firecrawl gap analysis fully closed on in-scope items. HTTP/2 over forged TLS shipped 2026-04-12 (EVASION.md §5.3). Next target: HTTP/2 SETTINGS frame forging (EVASION.md §8.3) or next consumer-driven feature.
+**Current phase:** Open — **v0.5.0 shipped 2026-04-12**. Proxy support (`--proxy`, `--proxy-file` with per-domain-sticky rotation). Firecrawl gap analysis fully closed. Lightpanda decision durably closed (Run D: 10.54% on n=579). Next targets are consumer-driven.
 **Last updated:** 2026-04-12
 
 This doc is the single source of truth for "what's next and why." The
@@ -67,7 +67,7 @@ against trawl's current state, scope judgment, and rough cost.
 | JSON body output (`--format json`)                 | ✅           | yes      | shipped |
 | Content caching                                    | ✅           | yes      | shipped |
 | LLM extraction                                     | ❌           | **no**   | —       |
-| Proxy rotation as a core feature                   | ❌           | P2 only  | large   |
+| Proxy support (single + rotating pool)              | ✅           | yes      | shipped |
 | Search integration                                 | ❌           | **no**   | —       |
 | Webhooks / async API                               | ❌           | **no**   | —       |
 
@@ -457,6 +457,37 @@ request every 2s but hammer internal APIs at 10/s in the same job."
 5. Example at `docs/examples/politeness.yaml` showing SEP and `*.gov`
    slow-crawl rules.
 
+### Phase: Proxy support — SHIPPED 2026-04-12
+
+**What landed:**
+1. `--proxy <url>` flag on scrape/batch/crawl/map. Routes all HTTP
+   and chromium requests through a single gateway proxy. HTTPS
+   targets use CONNECT tunneling automatically.
+2. `--proxy-file <path>` flag for a pool of proxies (one URL per
+   line, blank lines and `#` comments skipped). Per-domain-sticky
+   rotation: each target domain is hashed to a fixed pool index so
+   the same domain always exits through the same proxy IP. Thread-safe.
+3. Chromium tier receives the proxy via `chromedp.ProxyServer` launch
+   flag. For `--proxy-file`, chromium is pinned to the first proxy
+   in the pool (per-domain rotation requires recycling the browser
+   allocator, which is too expensive for v1).
+4. uTLS h1 fallback transport respects the proxy. h2 transport has
+   no proxy support (documented limitation — falls back to h1 through
+   the proxy automatically).
+5. `metadata.evasion.proxy: true` stamped on every proxied record.
+6. Proxy config persisted in JobConfig for resume. `--proxy` and
+   `--proxy-file` are mutually exclusive (error if both set).
+7. See `docs/PROXIES.md` for the full design doc including provider
+   recommendations, rotation strategies, and operational gotchas.
+
+**What was deferred (future P2):**
+- `{{session}}` template substitution for provider-specific rotation
+- `rotate_on_status` (retry through different proxy on 403/429)
+- `proxy:` YAML config block with per-tier overrides
+- `trawl proxy-test` health-check subcommand
+- BadgerDB session persistence for cross-run sticky sessions
+- SOCKS proxy support
+
 ---
 
 ## Explicitly deferred or out of scope
@@ -484,10 +515,6 @@ don't burn cycles relitigating them.
 
 ### Deferred until a concrete need arises
 
-- **Proxy rotation as a core feature.** `docs/PROXIES.md` is the
-  placeholder. Real proxy support changes the security story
-  materially; treat it as its own P2/P3 phase when there's a
-  concrete use case.
 - **HTTP/2 SETTINGS frame forging.** Go's `x/net/http2` sends its
   own SETTINGS values (INITIAL_WINDOW_SIZE, MAX_CONCURRENT_STREAMS,
   etc.) which differ from Chrome's. Matters only for detectors that

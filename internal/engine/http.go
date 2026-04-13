@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"syscall"
 	"time"
 
@@ -64,6 +65,24 @@ type HTTPConfig struct {
 	// self-signed httptest cert; production users can use it to
 	// trust an internal CA without disabling verification.
 	TLSRootCAs *x509.CertPool
+	// ProxyFunc, when non-nil, is called per-request to determine the
+	// proxy URL. If nil, http.ProxyFromEnvironment is used (backward
+	// compatible). Set by cmd/trawl/proxy.go from --proxy or
+	// --proxy-file flags.
+	ProxyFunc func(*http.Request) (*url.URL, error)
+	// ProxyEnabled is a record-only marker that causes Evasion.Proxy
+	// to be stamped on output records. Set when --proxy or --proxy-file
+	// is active.
+	ProxyEnabled bool
+}
+
+// proxyOrDefault returns the configured ProxyFunc, falling back to
+// http.ProxyFromEnvironment when no proxy was configured.
+func (c HTTPConfig) proxyOrDefault() func(*http.Request) (*url.URL, error) {
+	if c.ProxyFunc != nil {
+		return c.ProxyFunc
+	}
+	return http.ProxyFromEnvironment
 }
 
 // DefaultHTTPConfig returns production-sensible defaults.
@@ -122,7 +141,7 @@ func NewHTTP(cfg HTTPConfig) *HTTP {
 		transport = ut
 	} else {
 		transport = &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
+			Proxy: cfg.proxyOrDefault(),
 			DialContext: (&net.Dialer{
 				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
@@ -315,11 +334,12 @@ func (e *HTTP) fetchOnce(ctx context.Context, req Request) (*Result, error) {
 		Body:        body,
 		Duration:    time.Since(start),
 	}
-	if e.cfg.BrowserLikeHeaders || e.cfg.UserAgentStrategy != UAStrategyDeclared || e.cfg.TLSMatch != "" {
+	if e.cfg.BrowserLikeHeaders || e.cfg.UserAgentStrategy != UAStrategyDeclared || e.cfg.TLSMatch != "" || e.cfg.ProxyEnabled {
 		res.Evasion = &EvasionInfo{
 			BrowserLike: e.cfg.BrowserLikeHeaders,
 			UserAgent:   chosenUA,
 			TLSMatch:    e.cfg.TLSMatch,
+			Proxy:       e.cfg.ProxyEnabled,
 		}
 	}
 	return res, nil

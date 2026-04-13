@@ -41,6 +41,11 @@ type ChromiumConfig struct {
 	// shim — see internal/engine/stealth.js. Tier 2 from EVASION.md.
 	// Default false; opt-in via --stealth.
 	Stealth bool
+	// ProxyURL, when non-empty, routes all chromium requests through
+	// this HTTP proxy. Only a single URL is supported (Chrome's
+	// --proxy-server flag is process-wide). For rotating pools, the
+	// cmd layer pins the first proxy in the pool here.
+	ProxyURL string
 	// BrowserLike is a record-only marker that propagates the
 	// operator's --browser-like intent into chromium-served rows. The
 	// chromium engine doesn't actually do anything with the flag —
@@ -139,6 +144,9 @@ func (c *Chromium) allocator(parent context.Context) (context.Context, error) {
 	}
 	if c.cfg.UserAgent != "" {
 		opts = append(opts, chromedp.UserAgent(c.cfg.UserAgent))
+	}
+	if c.cfg.ProxyURL != "" {
+		opts = append(opts, chromedp.ProxyServer(c.cfg.ProxyURL))
 	}
 
 	// Allocator outlives individual Fetch calls so the browser is reused.
@@ -315,11 +323,12 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		Duration:    time.Since(start),
 		Screenshot:  screenshot,
 	}
-	if c.cfg.Stealth || c.cfg.BrowserLike {
+	if c.cfg.Stealth || c.cfg.BrowserLike || c.cfg.ProxyURL != "" {
 		res.Evasion = &EvasionInfo{
 			BrowserLike: c.cfg.BrowserLike,
 			Stealth:     c.cfg.Stealth,
 			UserAgent:   c.cfg.UserAgent,
+			Proxy:       c.cfg.ProxyURL != "",
 		}
 	}
 	return res, nil

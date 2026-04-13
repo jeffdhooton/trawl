@@ -139,6 +139,13 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, jobEvasion); err != nil {
 		return err
 	}
+	jobProxy := proxyOpts{
+		proxyURL:  cfg.ProxyURL,
+		proxyFile: cfg.ProxyFile,
+	}
+	if err := applyProxy(&httpCfg, &chromiumCfg, jobProxy); err != nil {
+		return err
+	}
 
 	r, err := buildRouter(cfg.tierList(), cfg.ForceTier, httpCfg, chromiumCfg)
 	if err != nil {
@@ -187,6 +194,7 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		log.Warn().Msg("robots.txt is being ignored for this job")
 	}
 	logEvasion(jobEvasion)
+	logProxy(jobProxy)
 
 	var wg sync.WaitGroup
 	wstats := &workerStats{start: time.Now()}

@@ -1,6 +1,6 @@
 ---
 name: trawl
-version: 0.4.1
+version: 0.5.0
 description: |
   Tiered web scraping for AI agents. HTTP → Chromium routing with persistent
   frontier, resumable batch jobs, BFS crawl, sitemap discovery, URL mapping,
@@ -513,6 +513,31 @@ trawl batch urls.txt \
 
 Every evasion flag is recorded in `metadata.evasion` on each JSONL record
 for post-hoc audit. See `docs/EVASION.md` for the full design doc.
+
+### Proxy support
+
+Route requests through an HTTP proxy to bypass IP-based blocks or
+distribute reputation.
+
+**Single gateway proxy:**
+
+```bash
+trawl batch urls.txt --proxy http://user:pass@gate.smartproxy.com:7000
+```
+
+**Rotating pool (per-domain-sticky):**
+
+```bash
+# proxies.txt: one URL per line, # comments and blank lines OK
+trawl batch urls.txt --proxy-file proxies.txt
+```
+
+Each target domain is pinned to one proxy for the job's lifetime (hash-
+based assignment). Cookies stay consistent because the same domain always
+exits through the same IP. Chromium tier uses the first proxy in the pool.
+
+Records show `metadata.evasion.proxy: true` when proxied. See
+`docs/PROXIES.md` for provider recommendations and operational gotchas.
 
 ---
 
