@@ -12,21 +12,24 @@ standalone CLI + library. It routes each URL through the cheapest
 engine that returns valid content. Persistent frontier, polite by
 default, single static binary.
 
-## Status (as of 2026-04-12)
+## Status (as of 2026-04-13)
 
-**Shipped (v0.5.0):** proxy support — `--proxy <url>` for a single
-gateway, `--proxy-file <path>` for a rotating pool with per-domain-
-sticky assignment. Works on HTTP, uTLS, and chromium tiers.
-`metadata.evasion.proxy: true` stamped on proxied records. Persisted
-in JobConfig for resume.
+**Shipped (v0.6.0):** proxy hardening — `--rotate-on-status
+403,429,503` retries through a different proxy on block codes
+(pool mode only), `--rotate-retries N` caps proxy swaps per tier.
+`trawl proxy-test` subcommand validates proxy connectivity before
+long runs. Forces escalation after rotation exhaustion so 403
+(normally non-escalatable) still tries the next tier.
 
-**Previously shipped:** P0 (HTTP tier, batch/scrape/resume, persistent
-frontier, politeness), P1 stage 1 (tiered router + Chromium engine),
-hybrid discovery, sitemap parsing, per-domain tier learning, content
-extraction (`--format html|markdown|json`, `--readability`, automatic
-page metadata), BFS crawl, URL mapping, screenshot output, content
-cache, schema extraction (v1 + v2), CSV/TSV output, HTTP retries
-with backoff, per-host politeness, Tier 1–3 evasion (`--browser-like`,
+**Previously shipped:** proxy support (`--proxy`, `--proxy-file`
+with per-domain-sticky rotation, v0.5.0), P0 (HTTP tier, batch/
+scrape/resume, persistent frontier, politeness), P1 stage 1
+(tiered router + Chromium engine), hybrid discovery, sitemap
+parsing, per-domain tier learning, content extraction (`--format
+html|markdown|json`, `--readability`, automatic page metadata),
+BFS crawl, URL mapping, screenshot output, content cache, schema
+extraction (v1 + v2), CSV/TSV output, HTTP retries with backoff,
+per-host politeness, Tier 1–3 evasion (`--browser-like`,
 `--stealth`, `--tls-match chrome` with full HTTP/2 via uTLS),
 `--format json`, interactive actions (`--action`/`--actions`),
 agentic hardening (chromium launch timeout, body size cap, router
@@ -37,7 +40,7 @@ ctx propagation, debug progress logs).
 below 15% threshold). HTTP/2 SETTINGS frame forging (EVASION.md
 §8.3) — only matters for TLS + SETTINGS combo detectors.
 
-**Current direction:** proxy support shipped. Next targets are
+**Current direction:** proxy hardening shipped. Next targets are
 consumer-driven. See `docs/ROADMAP.md`.
 
 ## Read these first
@@ -88,7 +91,7 @@ the next session must know" in `docs/DECISIONS.md`.
 ## Project layout
 
 ```
-cmd/trawl/              cobra entrypoint, scrape/batch/crawl/map/sitemap/resume commands
+cmd/trawl/              cobra entrypoint, scrape/batch/crawl/map/sitemap/resume/proxy-test commands
 scripts/install.sh      one-liner installer end users copy-paste (pulls latest release from GitHub)
 .goreleaser.yaml        GoReleaser build matrix (darwin+linux × amd64+arm64, CGO off, ldflags version injection)
 .github/workflows/      release.yml — CI workflow triggered on v* tag push, runs tests + GoReleaser
@@ -101,7 +104,7 @@ internal/frontier/      BadgerDB-backed URL queue (blocking Next for crawl)
 internal/output/        JSONL + CSV/TSV sinks, Record type, NewFile dispatcher
 internal/politeness/    robots.txt cache + per-domain rate/concurrency + per-host HostRules
 internal/action/        pre-scrape interactive actions (click/wait/scroll/type/sleep/evaluate)
-internal/router/        tiered escalation loop (w/ content cache hook)
+internal/router/        tiered escalation loop (w/ content cache hook + proxy rotation)
 internal/schema/        YAML/JSON schema → nested structured extraction (v1 + v2)
 internal/sitemap/       sitemap.xml discovery + index recursion + gzip
 internal/stats/         per-job stats.json aggregator

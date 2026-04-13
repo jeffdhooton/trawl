@@ -1,7 +1,7 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.5.0 shipped 2026-04-12**. Proxy support (`--proxy`, `--proxy-file` with per-domain-sticky rotation). Firecrawl gap analysis fully closed. Lightpanda decision durably closed (Run D: 10.54% on n=579). Next targets are consumer-driven.
-**Last updated:** 2026-04-12
+**Current phase:** Open — **v0.6.0 shipped 2026-04-13**. Proxy hardening: `--rotate-on-status` (retry through different proxy on block codes) and `trawl proxy-test` (pre-run proxy validation). Next targets are consumer-driven.
+**Last updated:** 2026-04-13
 
 This doc is the single source of truth for "what's next and why." The
 decision log in `docs/DECISIONS.md` captures one-off architectural
@@ -482,11 +482,75 @@ request every 2s but hammer internal APIs at 10/s in the same job."
 
 **What was deferred (future P2):**
 - `{{session}}` template substitution for provider-specific rotation
-- `rotate_on_status` (retry through different proxy on 403/429)
 - `proxy:` YAML config block with per-tier overrides
-- `trawl proxy-test` health-check subcommand
 - BadgerDB session persistence for cross-run sticky sessions
 - SOCKS proxy support
+
+### Phase: Proxy hardening — SHIPPED 2026-04-13
+
+Two features that close the biggest operational gaps in the v0.5.0
+proxy support: automatic retry through a different proxy when a
+target returns a block code, and a pre-run validation subcommand.
+
+**What landed:**
+
+1. **`--rotate-on-status <codes>`** flag on scrape/batch/crawl/map.
+   Comma-separated HTTP status codes (e.g. `403,429,503`) that
+   trigger proxy rotation and same-tier retry when `--proxy-file`
+   is active. `--rotate-retries N` (default 2) caps how many proxy
+   swaps are attempted per tier before proceeding.
+
+   - Only fires with `--proxy-file` (pool mode). Single `--proxy`
+     has nothing to rotate to — the flag is accepted but is a no-op.
+   - After rotation retries exhaust, the router forces
+     `Escalate=true` so the next tier still gets a chance. This is
+     critical for 403 which is normally non-escalatable: without
+     forced escalation, a proxy-blocked 403 would kill the row
+     even though chromium (which may use a different proxy) might
+     succeed.
+   - Each proxy rotation is logged at debug level
+     (`rotating proxy and retrying`) with the tier, host, status
+     code, and attempt counter. The output record's `Attempt` list
+     shows one entry per tier (not per rotation), keeping JSONL
+     consumers simple.
+   - Both flags are persisted in `config.json` (`rotate_on_status`,
+     `rotate_retries`) so resumed jobs keep the same behavior.
+
+2. **`trawl proxy-test`** subcommand. Validates proxy connectivity
+   before a long run.
+
+   ```bash
+   trawl proxy-test --proxy http://user:pass@gate.proxy.com:7000
+   trawl proxy-test --proxy-file proxies.txt
+   ```
+
+   Steps:
+   - Fetches your direct IP via an echo service (default
+     `httpbin.org/ip`, override with `--echo-url`).
+   - Tests each proxy: connects through it, verifies the exit IP
+     differs from your direct IP, reports latency.
+   - Warns when a proxy's exit IP matches your direct IP (common
+     with local/misconfigured proxies).
+   - Emits structured JSON to stdout for scripting, human-readable
+     progress to stderr.
+   - `--timeout` (default 15s) caps each individual test request.
+   - Supports both `--proxy` (single) and `--proxy-file` (pool).
+   - Password-redacted proxy labels in output (`user:***@host`).
+
+**Design decisions:**
+
+- **`ProxyRotator` interface** added to `internal/router`. The
+  router calls `Rotate(domain)` on the configured rotator when a
+  rotate-worthy status is seen. The `domainStickyRotator` in
+  `cmd/trawl/proxy.go` implements it by incrementing the pool
+  index for that domain (modular wrap). Single-proxy mode returns
+  `false` from `Rotate`, signaling the router to stop retrying.
+- **Forced escalation after rotation exhaustion.** A 403 through
+  every proxy in the pool doesn't mean "stop" — it means "this
+  tier can't get through, try the next." The router overrides the
+  validity checker's `Escalate=false` for rotate-worthy codes
+  when all retries are spent. This is the one place the rotation
+  logic intentionally overrides validity semantics.
 
 ---
 

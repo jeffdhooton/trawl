@@ -196,6 +196,8 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		PolitenessPath:  opts.politenessPath,
 		ProxyURL:          opts.proxy.proxyURL,
 		ProxyFile:         opts.proxy.proxyFile,
+		RotateOnStatus:    opts.proxy.rotateOnStatus,
+		RotateRetries:     opts.proxy.rotateRetries,
 		BrowserLike:       opts.evasion.browserLike,
 		UserAgentStrategy: opts.evasion.userAgentStrategy,
 		Stealth:           opts.evasion.stealth,

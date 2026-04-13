@@ -165,7 +165,8 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.evasion); err != nil {
 		return err
 	}
-	if err := applyProxy(&httpCfg, &chromiumCfg, opts.proxy); err != nil {
+	pr, err := applyProxy(&httpCfg, &chromiumCfg, opts.proxy)
+	if err != nil {
 		return err
 	}
 	tiers := parseTierList(opts.tiers)
@@ -177,6 +178,8 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		return err
 	}
 	defer r.Close()
+
+	r.WithProxyRotation(pr.rotator, pr.rotateCodes, pr.rotateMax)
 
 	tierCache, _, _ := openTierCache(opts.noTierLearning, opts.tierCachePath)
 	defer tierCache.Close()

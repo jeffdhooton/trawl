@@ -48,8 +48,10 @@ type JobConfig struct {
 
 	// Proxy knobs (opt-in). Persisted so resumed jobs route through the
 	// same proxy as the original run.
-	ProxyURL  string `json:"proxy_url,omitempty"`
-	ProxyFile string `json:"proxy_file,omitempty"`
+	ProxyURL       string `json:"proxy_url,omitempty"`
+	ProxyFile      string `json:"proxy_file,omitempty"`
+	RotateOnStatus string `json:"rotate_on_status,omitempty"`
+	RotateRetries  int    `json:"rotate_retries,omitempty"`
 
 	// Evasion knobs (opt-in). Persisted in config.json so resumed jobs
 	// keep the same anti-detection posture as the original run — a

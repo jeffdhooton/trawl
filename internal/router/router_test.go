@@ -401,3 +401,182 @@ func TestRouteContentCacheInvalidEscalates(t *testing.T) {
 		t.Error("FromCache = true but the winning tier was chromium")
 	}
 }
+
+// --- Proxy rotation tests ---
+
+// sequenceEngine returns different results on successive calls, cycling
+// through the provided results slice. Useful for simulating a 403 on the
+// first attempt and a 200 after proxy rotation.
+type sequenceEngine struct {
+	name    string
+	results []*engine.Result
+	calls   int
+}
+
+func (s *sequenceEngine) Name() string { return s.name }
+func (s *sequenceEngine) Close() error { return nil }
+func (s *sequenceEngine) Fetch(_ context.Context, req engine.Request) (*engine.Result, error) {
+	idx := s.calls
+	if idx >= len(s.results) {
+		idx = len(s.results) - 1
+	}
+	s.calls++
+	res := *s.results[idx]
+	res.URL = req.URL
+	return &res, nil
+}
+
+// fakeRotator tracks Rotate calls for testing.
+type fakeRotator struct {
+	calls    int
+	domains  []string
+	canRotate bool
+}
+
+func (f *fakeRotator) Rotate(domain string) bool {
+	f.calls++
+	f.domains = append(f.domains, domain)
+	return f.canRotate
+}
+
+// TestRouteProxyRotationRetries403 verifies that a 403 triggers proxy
+// rotation and retries the same tier, and succeeds when the second
+// attempt returns 200.
+func TestRouteProxyRotationRetries403(t *testing.T) {
+	httpE := &sequenceEngine{
+		name: "http",
+		results: []*engine.Result{
+			{StatusCode: 403, ContentType: "text/html", Body: validHTML()},
+			{StatusCode: 200, ContentType: "text/html", Body: validHTML()},
+		},
+	}
+	chromiumE := &fakeEngine{name: "chromium"}
+
+	rot := &fakeRotator{canRotate: true}
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithProxyRotation(rot, []int{403, 429, 503}, 2)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatalf("expected success after rotation, got %v", err)
+	}
+	if out.Tier != "http" {
+		t.Errorf("tier = %q, want http (should not have escalated)", out.Tier)
+	}
+	if out.Result.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", out.Result.StatusCode)
+	}
+	if httpE.calls != 2 {
+		t.Errorf("http calls = %d, want 2 (initial + 1 rotation)", httpE.calls)
+	}
+	if chromiumE.calls != 0 {
+		t.Errorf("chromium calls = %d, want 0 (should not escalate)", chromiumE.calls)
+	}
+	if rot.calls != 1 {
+		t.Errorf("rotator calls = %d, want 1", rot.calls)
+	}
+}
+
+// TestRouteProxyRotationExhaustedEscalates verifies that when all rotation
+// retries are exhausted, the router falls through to normal escalation.
+func TestRouteProxyRotationExhaustedEscalates(t *testing.T) {
+	// Always returns 403 — rotation never helps.
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 403, ContentType: "text/html", Body: validHTML(),
+	}}
+	chromiumE := &fakeEngine{name: "chromium", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	rot := &fakeRotator{canRotate: true}
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithProxyRotation(rot, []int{403}, 2)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatalf("expected chromium to succeed, got %v", err)
+	}
+	if out.Tier != "chromium" {
+		t.Errorf("tier = %q, want chromium", out.Tier)
+	}
+	// 1 initial + 2 rotation retries = 3 http calls
+	if httpE.calls != 3 {
+		t.Errorf("http calls = %d, want 3", httpE.calls)
+	}
+	if rot.calls != 2 {
+		t.Errorf("rotator calls = %d, want 2", rot.calls)
+	}
+}
+
+// TestRouteProxyRotationNonMatchingStatusNoRetry verifies that status
+// codes NOT in the rotate set don't trigger rotation.
+func TestRouteProxyRotationNonMatchingStatusNoRetry(t *testing.T) {
+	// 404 is not in the rotate set — should NOT retry.
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 404, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	rot := &fakeRotator{canRotate: true}
+	r, _ := New([]engine.Engine{httpE}, validity.NewChecker(validity.Default()))
+	r.WithProxyRotation(rot, []int{403, 429}, 2)
+
+	_, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err == nil {
+		t.Fatal("expected error for 404 (non-escalatable)")
+	}
+	if httpE.calls != 1 {
+		t.Errorf("http calls = %d, want 1 (no rotation)", httpE.calls)
+	}
+	if rot.calls != 0 {
+		t.Errorf("rotator calls = %d, want 0", rot.calls)
+	}
+}
+
+// TestRouteProxyRotationCannotRotateEscalates verifies that when the
+// rotator returns false (pool exhausted / single proxy), the router
+// forces escalation so the next tier gets a chance.
+func TestRouteProxyRotationCannotRotateEscalates(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 403, ContentType: "text/html", Body: validHTML(),
+	}}
+	chromiumE := &fakeEngine{name: "chromium", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	rot := &fakeRotator{canRotate: false}
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	r.WithProxyRotation(rot, []int{403}, 2)
+
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err != nil {
+		t.Fatalf("expected chromium to succeed after forced escalation, got %v", err)
+	}
+	if out.Tier != "chromium" {
+		t.Errorf("tier = %q, want chromium", out.Tier)
+	}
+	if httpE.calls != 1 {
+		t.Errorf("http calls = %d, want 1", httpE.calls)
+	}
+	if rot.calls != 1 {
+		t.Errorf("rotator calls = %d, want 1 (tried once, got false)", rot.calls)
+	}
+}
+
+// TestRouteNoRotatorConfigured verifies the normal path when no proxy
+// rotation is set — should behave identically to pre-rotation code.
+func TestRouteNoRotatorConfigured(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 403, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	r, _ := New([]engine.Engine{httpE}, validity.NewChecker(validity.Default()))
+	// No WithProxyRotation call.
+
+	_, err := r.Route(context.Background(), engine.Request{URL: "https://example.com/"})
+	if err == nil {
+		t.Fatal("expected error for 403")
+	}
+	if httpE.calls != 1 {
+		t.Errorf("http calls = %d, want 1", httpE.calls)
+	}
+}

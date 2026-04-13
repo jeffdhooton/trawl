@@ -140,10 +140,13 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		return err
 	}
 	jobProxy := proxyOpts{
-		proxyURL:  cfg.ProxyURL,
-		proxyFile: cfg.ProxyFile,
+		proxyURL:       cfg.ProxyURL,
+		proxyFile:      cfg.ProxyFile,
+		rotateOnStatus: cfg.RotateOnStatus,
+		rotateRetries:  cfg.RotateRetries,
 	}
-	if err := applyProxy(&httpCfg, &chromiumCfg, jobProxy); err != nil {
+	pr, err := applyProxy(&httpCfg, &chromiumCfg, jobProxy)
+	if err != nil {
 		return err
 	}
 
@@ -152,6 +155,8 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		return fmt.Errorf("build router: %w", err)
 	}
 	defer r.Close()
+
+	r.WithProxyRotation(pr.rotator, pr.rotateCodes, pr.rotateMax)
 
 	// Attach the persistent tier-learning cache so repeat hosts skip the
 	// cheap-tier dead reckoning. Errors degrade to NopCache (no learning)

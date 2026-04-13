@@ -29,7 +29,9 @@ func newRootCmd() *cobra.Command {
 		Use:   "trawl",
 		Short: "Intelligent tiered web scraping",
 		Long: `trawl routes each URL through the cheapest engine that returns valid content:
-HTTP → Lightpanda → Chromium. Persistent frontier, polite by default, resumable.`,
+HTTP → Chromium. Persistent frontier, polite by default, resumable.
+
+Use "trawl proxy-test" to validate proxy connectivity before a long run.`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			lvl, err := zerolog.ParseLevel(logLevel)
@@ -50,6 +52,7 @@ HTTP → Lightpanda → Chromium. Persistent frontier, polite by default, resuma
 	cmd.AddCommand(newMapCmd())
 	cmd.AddCommand(newResumeCmd())
 	cmd.AddCommand(newSitemapCmd())
+	cmd.AddCommand(newProxyTestCmd())
 
 	return cmd
 }

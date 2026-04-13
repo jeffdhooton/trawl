@@ -19,7 +19,18 @@ import (
 	"github.com/jeffdhooton/trawl/internal/engine"
 	"github.com/jeffdhooton/trawl/internal/tierlearn"
 	"github.com/jeffdhooton/trawl/internal/validity"
+	"github.com/rs/zerolog/log"
 )
+
+// ProxyRotator allows the router to force a proxy rotation for a
+// target domain when a fetch returns a rotate-worthy status code.
+// Implementations live in cmd/trawl (domainStickyRotator).
+type ProxyRotator interface {
+	// Rotate forces a new proxy assignment for the given domain.
+	// Returns false if rotation is not possible (single proxy, pool
+	// exhausted, or no pool configured).
+	Rotate(domain string) bool
+}
 
 // Router routes fetches through a tiered set of engines.
 type Router struct {
@@ -27,6 +38,14 @@ type Router struct {
 	checker      validity.Checker
 	cache        tierlearn.Cache
 	contentCache cache.Cache
+
+	// Proxy rotation on specific status codes. When rotator is non-nil
+	// and a live fetch returns a status code in rotateCodes, the router
+	// calls rotator.Rotate(host) and retries the SAME tier up to
+	// rotateRetries times before proceeding with normal escalation.
+	rotator      ProxyRotator
+	rotateCodes  map[int]bool
+	rotateMax    int // max proxy-rotation retries per tier (0 = disabled)
 }
 
 // New constructs a Router. Engines should be ordered cheap → expensive.
@@ -56,6 +75,24 @@ func (r *Router) WithCache(c tierlearn.Cache) *Router {
 	} else {
 		r.cache = c
 	}
+	return r
+}
+
+// WithProxyRotation configures the router to retry a tier through a
+// different proxy when a fetch returns one of the given status codes.
+// maxRetries caps how many proxy rotations are attempted per tier
+// (0 disables rotation). Only effective when rotator is non-nil and
+// the proxy pool has more than one entry.
+func (r *Router) WithProxyRotation(rotator ProxyRotator, codes []int, maxRetries int) *Router {
+	if rotator == nil || len(codes) == 0 || maxRetries <= 0 {
+		return r
+	}
+	r.rotator = rotator
+	r.rotateCodes = make(map[int]bool, len(codes))
+	for _, c := range codes {
+		r.rotateCodes[c] = true
+	}
+	r.rotateMax = maxRetries
 	return r
 }
 
@@ -165,9 +202,9 @@ func (r *Router) Route(ctx context.Context, req engine.Request) (*Outcome, error
 			continue
 		}
 
-		res, err := e.Fetch(ctx, req)
-		if err != nil {
-			attempt.Err = err
+		res, vr, fetchErr := r.fetchWithProxyRotation(ctx, e, req, host)
+		if fetchErr != nil {
+			attempt.Err = fetchErr
 			outcome.Attempts = append(outcome.Attempts, attempt)
 			if ctx.Err() != nil {
 				return outcome, ctx.Err()
@@ -175,16 +212,9 @@ func (r *Router) Route(ctx context.Context, req engine.Request) (*Outcome, error
 			continue // try next tier on transient fetch failure
 		}
 		attempt.Result = res
-		outcome.LastResult = res
-
-		vr := r.checker.Check(validity.Page{
-			URL:         req.URL,
-			StatusCode:  res.StatusCode,
-			ContentType: res.ContentType,
-			Body:        res.Body,
-		})
 		attempt.Valid = vr.Valid
 		attempt.Reason = vr.Reason
+		outcome.LastResult = res
 		outcome.Attempts = append(outcome.Attempts, attempt)
 
 		if vr.Valid {
@@ -271,6 +301,73 @@ type Outcome struct {
 	// is attached and returns a hit. Surface-only; downstream consumers use
 	// it to distinguish cache-served rows from live ones.
 	FromCache bool
+}
+
+// fetchWithProxyRotation fetches through the given engine, retrying with
+// rotated proxies when the response status matches rotateCodes. Returns the
+// final Result and validity check. On network-level fetch failure (no Result),
+// returns a nil Result with the error — the caller handles escalation.
+func (r *Router) fetchWithProxyRotation(
+	ctx context.Context,
+	e engine.Engine,
+	req engine.Request,
+	host string,
+) (*engine.Result, validity.Result, error) {
+	maxAttempts := 1 + r.rotateMax // 1 initial + N rotations
+	if r.rotator == nil || len(r.rotateCodes) == 0 {
+		maxAttempts = 1
+	}
+
+	var lastRes *engine.Result
+	var lastVR validity.Result
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return lastRes, lastVR, ctx.Err()
+		}
+
+		res, err := e.Fetch(ctx, req)
+		if err != nil {
+			// Network-level failure — no status code to check for rotation.
+			return nil, validity.Result{}, err
+		}
+
+		vr := r.checker.Check(validity.Page{
+			URL:         req.URL,
+			StatusCode:  res.StatusCode,
+			ContentType: res.ContentType,
+			Body:        res.Body,
+		})
+
+		lastRes = res
+		lastVR = vr
+
+		if vr.Valid {
+			return res, vr, nil
+		}
+
+		// Check if this status code warrants a proxy rotation retry.
+		if r.rotateCodes[res.StatusCode] {
+			if attempt < maxAttempts-1 && r.rotator.Rotate(host) {
+				log.Debug().
+					Str("tier", e.Name()).
+					Str("host", host).
+					Int("status", res.StatusCode).
+					Int("attempt", attempt+1).
+					Int("max", maxAttempts).
+					Msg("rotating proxy and retrying")
+				continue
+			}
+			// All rotation retries exhausted (or pool can't rotate).
+			// Force Escalate=true so the router tries the next tier —
+			// a different tier may use a different proxy or no proxy at
+			// all. Without this, a 403 (normally non-escalatable) would
+			// kill the row even though chromium might succeed.
+			lastVR.Escalate = true
+		}
+		break
+	}
+	return lastRes, lastVR, nil
 }
 
 // Attempt is a single engine's outcome during routing.

@@ -246,9 +246,10 @@ func runMapCrawl(ctx context.Context, seed string, opts mapOpts, emit func(strin
 	if err := applyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.evasion); err != nil {
 		return err
 	}
-	if err := applyProxy(&httpCfg, &chromiumCfg, opts.proxy); err != nil {
+	if _, err := applyProxy(&httpCfg, &chromiumCfg, opts.proxy); err != nil {
 		return err
 	}
+	// Map uses HTTP-only (no router), so proxy rotation is not wired here.
 	logEvasion(opts.evasion)
 	logProxy(opts.proxy)
 

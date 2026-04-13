@@ -83,9 +83,109 @@ func TestApplyProxyMutualExclusion(t *testing.T) {
 	httpCfg := engine.DefaultHTTPConfig()
 	chromiumCfg := engine.DefaultChromiumConfig()
 	opts := proxyOpts{proxyURL: "http://x:8080", proxyFile: "/tmp/p.txt"}
-	err := applyProxy(&httpCfg, &chromiumCfg, opts)
+	_, err := applyProxy(&httpCfg, &chromiumCfg, opts)
 	if err == nil {
 		t.Fatal("expected mutual exclusion error")
+	}
+}
+
+func TestDomainStickyRotatorRotate(t *testing.T) {
+	pool := []*url.URL{
+		{Scheme: "http", Host: "proxy1:8080"},
+		{Scheme: "http", Host: "proxy2:8080"},
+		{Scheme: "http", Host: "proxy3:8080"},
+	}
+	rot := &domainStickyRotator{pool: pool, assigned: make(map[string]int)}
+
+	// Initial assignment for example.com
+	req, _ := http.NewRequest("GET", "https://example.com/", nil)
+	p1, _ := rot.proxyForRequest(req)
+	originalHost := p1.Host
+
+	// Rotate should move to the next proxy.
+	if !rot.Rotate("example.com") {
+		t.Fatal("Rotate returned false, want true")
+	}
+	p2, _ := rot.proxyForRequest(req)
+	if p2.Host == originalHost {
+		t.Errorf("after Rotate, proxy should differ: got %s again", p2.Host)
+	}
+
+	// Rotate again — should move again.
+	rot.Rotate("example.com")
+	p3, _ := rot.proxyForRequest(req)
+	if p3.Host == p2.Host {
+		t.Errorf("second Rotate didn't change proxy: %s", p3.Host)
+	}
+
+	// Rotate wraps around the pool.
+	rot.Rotate("example.com")
+	p4, _ := rot.proxyForRequest(req)
+	if p4.Host != originalHost {
+		t.Errorf("after 3 rotations (pool=3), should wrap to original: got %s, want %s", p4.Host, originalHost)
+	}
+}
+
+func TestDomainStickyRotatorRotateSingleProxy(t *testing.T) {
+	pool := []*url.URL{{Scheme: "http", Host: "only:8080"}}
+	rot := &domainStickyRotator{pool: pool, assigned: make(map[string]int)}
+
+	req, _ := http.NewRequest("GET", "https://example.com/", nil)
+	rot.proxyForRequest(req) // seed the assignment
+
+	if rot.Rotate("example.com") {
+		t.Fatal("Rotate should return false for single-proxy pool")
+	}
+}
+
+func TestDomainStickyRotatorRotateUnknownDomain(t *testing.T) {
+	pool := []*url.URL{
+		{Scheme: "http", Host: "proxy1:8080"},
+		{Scheme: "http", Host: "proxy2:8080"},
+	}
+	rot := &domainStickyRotator{pool: pool, assigned: make(map[string]int)}
+
+	// Rotate for a domain that was never assigned.
+	if rot.Rotate("never-seen.com") {
+		t.Fatal("Rotate should return false for unassigned domain")
+	}
+}
+
+func TestParseStatusCodes(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    []int
+		wantErr bool
+	}{
+		{"403,429,503", []int{403, 429, 503}, false},
+		{"403", []int{403}, false},
+		{" 403 , 429 ", []int{403, 429}, false},
+		{"", nil, true},
+		{"abc", nil, true},
+		{"99", nil, true},   // below 100
+		{"600", nil, true},  // above 599
+	}
+	for _, tt := range tests {
+		codes, err := parseStatusCodes(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("parseStatusCodes(%q) = %v, want error", tt.input, codes)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseStatusCodes(%q) error: %v", tt.input, err)
+			continue
+		}
+		if len(codes) != len(tt.want) {
+			t.Errorf("parseStatusCodes(%q) = %v, want %v", tt.input, codes, tt.want)
+			continue
+		}
+		for i := range codes {
+			if codes[i] != tt.want[i] {
+				t.Errorf("parseStatusCodes(%q)[%d] = %d, want %d", tt.input, i, codes[i], tt.want[i])
+			}
+		}
 	}
 }
 
@@ -93,7 +193,7 @@ func TestApplyProxySingleURL(t *testing.T) {
 	httpCfg := engine.DefaultHTTPConfig()
 	chromiumCfg := engine.DefaultChromiumConfig()
 	opts := proxyOpts{proxyURL: "http://user:pass@gate.proxy.com:7000"}
-	if err := applyProxy(&httpCfg, &chromiumCfg, opts); err != nil {
+	if _, err := applyProxy(&httpCfg, &chromiumCfg, opts); err != nil {
 		t.Fatalf("applyProxy: %v", err)
 	}
 	if httpCfg.ProxyFunc == nil {
