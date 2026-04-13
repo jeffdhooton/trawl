@@ -117,7 +117,7 @@ func NewHTTP(cfg HTTPConfig) *HTTP {
 		// whole point of opting in.
 		ut, err := newUTLSTransport(cfg, cfg.TLSMatch)
 		if err != nil {
-			panic(fmt.Sprintf("trawl: --tls-match %q: %v", cfg.TLSMatch, err))
+			log.Fatal().Err(err).Str("preset", cfg.TLSMatch).Msg("--tls-match transport init failed")
 		}
 		transport = ut
 	} else {

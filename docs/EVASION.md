@@ -1,6 +1,8 @@
 # Trawl — Anti-Detection / Evasion Playbook
 
-**Status:** design doc, not yet implemented.
+**Status:** Tier 1 (browser mimicry), Tier 2 (chromium stealth),
+and Tier 3 (Chrome TLS forgery + HTTP/2) are shipped. Tier 4 (proxy
+rotation) is deferred to P2. See §5.1–§5.3 SHIPPED subsections.
 **Audience:** future contributors deciding what to build (primary),
 and operators who want to understand trawl's philosophy around
 hostile-site scraping (secondary).

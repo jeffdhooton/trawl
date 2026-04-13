@@ -19,14 +19,12 @@ one rises in priority.
   run shows ≥15% chromium escalation on n≥500 reachable — do not
   build Lightpanda before that evidence lands.
 
-- **Phase 0 re-run with BFS crawl + richer discovery is still pending.**
-  BFS crawl mode shipped 2026-04-10 (`trawl crawl`), as did URL mapping
-  (`trawl map`) and the `--schema` extraction path. None of them have
-  been re-run against the 1000-row `seed/companies.csv` subset to see
-  whether the expanded measurable population moves the chromium
-  escalation rate past 15%. Next Lightpanda data point belongs here.
-  See Run C in `docs/DECISIONS.md` for the baseline (14.08%, n=355) to
-  beat.
+- **Phase 0 re-run with expanded discovery — DONE 2026-04-12.**
+  Run D used 18-pattern expanded selectors + `trawl map` BFS discovery
+  against the same 1000-row seed. Result: 10.54% chromium escalation on
+  n=579 reachable. Both thresholds resolved: n≥500 passed (first time),
+  rate dropped below Run C's 14.08%. Lightpanda is out of scope for v1.
+  See Run D addendum in `docs/DECISIONS.md`.
 
 ---
 

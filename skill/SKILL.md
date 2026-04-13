@@ -1,6 +1,6 @@
 ---
 name: trawl
-version: 0.4.0
+version: 0.4.1
 description: |
   Tiered web scraping for AI agents. HTTP → Chromium routing with persistent
   frontier, resumable batch jobs, BFS crawl, sitemap discovery, URL mapping,
@@ -469,6 +469,50 @@ trawl batch urls.txt --no-tier-learning
 
 Forces every URL to start at the cheapest tier regardless of prior results.
 Useful for benchmarking or when the cache is stale.
+
+### Evasion / anti-detection (opt-in, tiered)
+
+When targets block bot traffic, trawl has three escalation tiers. All are
+opt-in — default behavior is polite and declared.
+
+**Tier 1: Browser mimicry** (`--browser-like`)
+Rotating Chrome User-Agent, full Chrome header set (Sec-Fetch-*, Sec-CH-UA),
+in-memory cookie jar, ±20% timing jitter. Cheapest evasion — try this first.
+
+```bash
+trawl batch urls.txt --browser-like
+```
+
+**Tier 2: Chromium stealth** (`--stealth`)
+Injects an init script before navigation that patches `navigator.webdriver`,
+plugins, WebGL fingerprints, and other bot-detection signals. Chromium tier
+only — the HTTP tier ignores it.
+
+```bash
+trawl scrape https://protected-site.com --browser-like --stealth --force-tier chromium
+```
+
+**Tier 3: TLS fingerprint forgery** (`--tls-match chrome`)
+Replaces Go's TLS stack with a forged Chrome ClientHello via uTLS. HTTP/2
+is negotiated with the real Chrome ALPN list — the JA4 fingerprint is
+indistinguishable from real Chrome. HTTP tier only — chromium has its own
+real Chrome TLS stack.
+
+```bash
+trawl batch urls.txt --browser-like --tls-match chrome
+```
+
+**Combined (maximum evasion):**
+
+```bash
+trawl batch urls.txt \
+  --browser-like \
+  --stealth \
+  --tls-match chrome
+```
+
+Every evasion flag is recorded in `metadata.evasion` on each JSONL record
+for post-hoc audit. See `docs/EVASION.md` for the full design doc.
 
 ---
 

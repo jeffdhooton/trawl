@@ -634,3 +634,102 @@ that existing infrastructure, not building new discovery paths.
 
 **Authored during session:** 2026-04-10.
 **Commit reference for data:** `72a25b6` + `~/.trawl/jobs/phase0-1000-hybrid/`.
+
+### Addendum — 2026-04-12: Run D closes the Lightpanda question with n≥500
+
+Re-ran Phase 0 with two discovery improvements, targeting the n≥500
+reachable threshold that Run C missed by 145 rows:
+
+1. **Expanded fallback selector** — 18 patterns (vs Run C's 3):
+   pricing, /plans, /price, /subscribe, /subscription, /upgrade,
+   /buy, /packages, /billing, /pro, /premium, /enterprise,
+   /features, /cost, /rates, /tiers, /get-started, /signup, /order.
+2. **Map-based discovery** — for rows where even the expanded
+   selector failed, `trawl map --depth 1` crawled 649 homepages
+   (HTTP-only BFS), discovered 7803 URLs, filtered 74 pricing-like
+   URLs not already fetched, and batched them through the tier
+   cascade.
+
+Same first 1000 rows as Run C. `--browser-like --no-tier-learning
+--ignore-robots --tiers http,chromium`. Script at
+`bench/phase0/run.sh`.
+
+```
+Run D — expanded selectors + map discovery, n=1000 input
+
+total             1073  (999 primary + 74 map-discovered)
+reachable          579  (53.9%)
+unreachable        494
+
+successes by tier:
+  http             518   avg ~700ms
+  chromium          61   avg ~3.0s
+
+chromium_escalation_rate = 61 / 579 = 10.54%
+
+failures by category:
+  http_4xx         367
+  dns_failure       44
+  timeout           24
+  tls_error         23
+  spa_shell         12
+  all_tiers_exhausted 8
+  http_5xx           6
+  connection_refused  5
+  parked_domain      2
+```
+
+**Rule evaluation:**
+
+| Threshold | Required | Run D | Verdict |
+|-----------|----------|-------|---------|
+| n ≥ 500 reachable | ≥ 500 | **579** | **PASS** (first time) |
+| Escalation rate ≥ 15% | ≥ 15% | **10.54%** | FAIL |
+
+**The Lightpanda question is now closed with proper statistical
+power.** Run D is the first measurement that satisfies the n≥500
+sample size requirement, and the rate moved *away* from the
+threshold, not toward it.
+
+**Trend across all four runs:**
+
+```
+Run A (pricing_url only):     11.4%  on n=158
+Run B (homepage+follow):       4.4%  on n=91  (outlier — easy subset)
+Run C (hybrid, 3 selectors):  14.08% on n=355
+Run D (hybrid, 18 selectors): 10.54% on n=579
+```
+
+Run C's 14.08% was elevated by a small-sample effect: the 355
+reachable pages were disproportionately the hard-to-render subset
+because the 3-pattern selector missed most of the easy pages with
+non-standard pricing paths. Run D's expanded selectors recovered
+224 more pages, and **213 of 224 were HTTP-tier** — exactly the
+easy pages the caveat warned about. Expanding discovery diluted
+the chromium share rather than inflating it.
+
+**The Run C caveat resolved in the opposite direction of what was
+feared.** The caveat said "the 65% that missed are likely the hard
+pages that need chromium." In reality, the missed pages were
+overwhelmingly easy (HTTP-served, static pricing pages with
+non-standard URL paths like /subscribe, /pro, /get-started). The
+hard pages were already in the measurable population.
+
+**This decision is now durable.** The "auto-reopen" condition
+(>70% reach AND ≥15% rate) is no longer plausible given that
+reach improved from 35.5% → 53.9% while the rate dropped from
+14.08% → 10.54%. Further discovery improvements would recover
+even more HTTP-easy pages, pushing the rate further below 15%.
+
+**What would still reopen Lightpanda:**
+
+- A production workload (not the seed dataset) showing >20%
+  chromium escalation on n≥500, where the chromium wall clock
+  is a material fraction of total run time.
+- A user-facing request with latency evidence.
+
+Neither of these exists today. Lightpanda is out of scope for v1.
+
+**Authored during session:** 2026-04-12.
+**Benchmark script:** `bench/phase0/run.sh`.
+**Result artifacts:** `bench/phase0/results-20260412-213849/`.

@@ -124,6 +124,9 @@ func (r *Router) Route(ctx context.Context, req engine.Request) (*Outcome, error
 	}
 
 	for _, e := range ladder {
+		if ctx.Err() != nil {
+			return outcome, ctx.Err()
+		}
 		attempt := Attempt{Tier: e.Name()}
 
 		// Content cache lookup: if this (URL, tier) is cached and fresh,

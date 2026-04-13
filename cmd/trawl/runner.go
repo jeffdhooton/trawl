@@ -275,9 +275,16 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 	if err != nil {
 		return err
 	}
+	total := s.Done + s.Failed
+	var successRate float64
+	if total > 0 {
+		successRate = float64(s.Done) / float64(total)
+	}
 	log.Info().
 		Int("done", s.Done).
 		Int("failed", s.Failed).
+		Int("total", total).
+		Float64("success_rate", successRate).
 		Int("queued", s.Queued).
 		Int("in_flight", s.InFlight).
 		Str("elapsed", time.Since(wstats.start).Round(time.Millisecond).String()).

@@ -11,6 +11,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
+	"github.com/rs/zerolog/log"
 )
 
 // stealthJS is the script injected before navigation when
@@ -140,12 +141,29 @@ func (c *Chromium) allocator(parent context.Context) (context.Context, error) {
 		opts = append(opts, chromedp.UserAgent(c.cfg.UserAgent))
 	}
 
-	// Allocator is NOT tied to `parent` — we want it to outlive individual
-	// Fetch calls so the browser is reused across requests.
-	ctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	// Allocator outlives individual Fetch calls so the browser is reused.
+	// The 30s timeout prevents an indefinite hang if Chrome can't launch
+	// (missing binary, resource exhaustion, misconfigured sandbox).
+	launchCtx, launchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := chromedp.NewExecAllocator(launchCtx, opts...)
+
+	// Verify the browser actually starts by creating and immediately
+	// closing a throwaway context. This forces chromedp to spawn the
+	// process now (under the launch timeout) rather than deferring it
+	// to the first Fetch where a launch failure would be confusing.
+	probeCtx, probeCancel := chromedp.NewContext(ctx)
+	if err := chromedp.Run(probeCtx); err != nil {
+		probeCancel()
+		cancel()
+		launchCancel()
+		return nil, fmt.Errorf("chromium launch failed (is Chrome installed?): %w", err)
+	}
+	probeCancel()
+	launchCancel()
+
 	c.allocCtx = ctx
 	c.allocCancel = cancel
-	_ = parent // parent reserved for future cancellation wiring
+	_ = parent
 	return ctx, nil
 }
 
@@ -209,12 +227,17 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	)
 	if c.cfg.WaitAfterLoad > 0 {
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+			log.Debug().Str("url", req.URL).Str("wait", c.cfg.WaitAfterLoad.String()).Msg("chromium: waiting after page load")
+			return nil
+		}))
 		actions = append(actions, chromedp.Sleep(c.cfg.WaitAfterLoad))
 	}
 	// User-supplied interactive actions (click, scroll, wait, etc.) run
 	// after the page has loaded and settled, before we capture the final
 	// DOM state. The HTTP engine silently ignores these.
 	if len(req.Actions) > 0 {
+		log.Debug().Str("url", req.URL).Int("count", len(req.Actions)).Msg("chromium: running pre-scrape actions")
 		actions = append(actions, req.Actions...)
 	}
 	actions = append(actions,
@@ -267,13 +290,28 @@ func (c *Chromium) Fetch(ctx context.Context, req Request) (*Result, error) {
 		ct = "text/html"
 	}
 
+	body := []byte(html)
+	// Cap body size to prevent memory blowup on pages with huge inline
+	// data (base64 images, embedded datasets). The HTTP engine applies
+	// the same limit via io.LimitReader; chromium needs it post-hoc
+	// because OuterHTML returns the entire DOM as a string.
+	const maxChromiumBody = 20 << 20 // 20 MiB, matches HTTP default
+	if len(body) > maxChromiumBody {
+		log.Warn().
+			Str("url", req.URL).
+			Int("body_bytes", len(body)).
+			Int("max_bytes", maxChromiumBody).
+			Msg("chromium body truncated to size limit")
+		body = body[:maxChromiumBody]
+	}
+
 	res := &Result{
 		URL:         req.URL,
 		FinalURL:    finalURL,
 		StatusCode:  statusCode,
 		Header:      header,
 		ContentType: ct,
-		Body:        []byte(html),
+		Body:        body,
 		Duration:    time.Since(start),
 		Screenshot:  screenshot,
 	}
