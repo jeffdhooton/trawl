@@ -1,7 +1,7 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.6.0 shipped 2026-04-13**. Proxy hardening: `--rotate-on-status` (retry through different proxy on block codes) and `trawl proxy-test` (pre-run proxy validation). Next targets are consumer-driven.
-**Last updated:** 2026-04-13
+**Current phase:** Open — **v0.7.0 shipped 2026-04-14**. PDF engine: parallel content-type branch off the HTTP engine, `internal/pdf` package, three-tier ladder (pdftotext → pdftotext -layout → tesseract OCR), `metadata.pdf` struct in output records, `--ocr` / `--ocr-lang` / `--pdf-max-pages` flags, soft-fail on missing poppler-utils. Closes the last Firecrawl content-extraction gap while keeping the no-CGO rule intact. Design doc: `docs/PDF.md`. Next targets consumer-driven.
+**Last updated:** 2026-04-14
 
 This doc is the single source of truth for "what's next and why." The
 decision log in `docs/DECISIONS.md` captures one-off architectural
@@ -68,6 +68,7 @@ against trawl's current state, scope judgment, and rough cost.
 | Content caching                                    | ✅           | yes      | shipped |
 | LLM extraction                                     | ❌           | **no**   | —       |
 | Proxy support (single + rotating pool)              | ✅           | yes      | shipped |
+| PDF → markdown (text + layout + optional OCR)       | ✅           | yes      | shipped |
 | Search integration                                 | ❌           | **no**   | —       |
 | Webhooks / async API                               | ❌           | **no**   | —       |
 
@@ -551,6 +552,68 @@ target returns a block code, and a pre-run validation subcommand.
   validity checker's `Escalate=false` for rotate-worthy codes
   when all retries are spent. This is the one place the rotation
   logic intentionally overrides validity semantics.
+
+### Phase: PDF engine — SHIPPED 2026-04-14
+
+**Why this phase:** Firecrawl shipped "Fire-PDF" in April 2026, and
+PDF → markdown was the only remaining content-extraction capability
+in the gap analysis where trawl produced visibly wrong output (raw
+PDF bytes in `body` on any `application/pdf` response). Every crawl
+of a research, government, or policy site tripped this.
+
+**What landed:**
+
+1. **`internal/pdf` package** — body-transformer, not an Engine.
+   Dispatched by content-type in `cmd/trawl/scrape.go`'s
+   `buildRecord` right before the HTML-gated pipeline. Lazy-cached
+   binary detection (`HasPdftotext`, `HasTesseract`, `HasPdftoppm`,
+   `HasPdfinfo`, `OCRAvailable`), shell-out helpers (`run()` with
+   stdin piping + stderr capture), typed error sentinels
+   (`ErrPdftotextMissing`, `ErrEncrypted`, `ErrEmptyExtraction`,
+   etc.). ~1100 lines across `pdf.go`, `detect.go`, `tools.go`,
+   `pdftotext.go`, `pdfinfo.go`, `tesseract.go`, `pdftest.go`.
+2. **Three-tier internal ladder.** Tier 1 = plain `pdftotext`;
+   escalate to Tier 2 (`-layout`) on stub Tier 1 output; escalate
+   to Tier 3 (`pdftoppm` rasterize → `tesseract` per page) only
+   when `--ocr` is on AND Tier 2 also returns stub. Stub threshold:
+   16 bytes of non-whitespace non-page-separator text.
+3. **Output shape.** `output.PDFInfo` on every PDF-derived record
+   with `page_count`, `title`, `author`, `created_at`,
+   `has_text_layer`, `used_ocr`, `extractor_tier`, and per-page
+   `pages[]`. Body field holds the extracted markdown; ContentType
+   flips to `text/markdown`. PDF title copied into
+   `metadata.page.title` when present so `jq
+   '.metadata.page.title'` works uniformly across HTML + PDF.
+4. **Flags.** `--ocr`, `--ocr-lang` (default `eng`),
+   `--pdf-max-pages` (default 50, OCR-only cap) on scrape / batch /
+   crawl. Persisted in `config.json` for resume. Command-start
+   validation hard-fails when `--ocr` is passed and `tesseract` or
+   `pdftoppm` is missing, with a platform-specific install hint.
+5. **Soft-fail on missing `pdftotext`.** Raw PDF bytes preserved in
+   `body`, `failure_category` = `pdf_tooling_missing`, install hint
+   logged once per run. Trawl stays useful for HTML even without
+   poppler-utils installed.
+6. **`--format html` on PDFs** silently upgrades to `markdown` with
+   a one-line warning log (once per run). PDF bytes aren't useful
+   HTML.
+7. **Validity.** `application/pdf` and `application/x-pdf` now
+   return `Valid: true` from `internal/validity`, matching how
+   JSON/XML/plain-text are handled — the router stops escalating,
+   the body transformer downstream handles extraction.
+
+**Architectural calls** recorded in `docs/DECISIONS.md`
+(2026-04-14): no CGO (SPEC §7 stands), no standalone Rust PDF tool,
+`marker`/`docling` integration deferred. Explicit non-goals:
+in-process parsing, image extraction, form fields, password-
+protected PDFs, `--schema` support for PDFs.
+
+**Testing.** Unit-mocked at the `runCmd` level for tier escalation,
+error classification, and OCR orchestration. Live smoke tests
+against real poppler-utils + tesseract exercise Tier 1, Tier 2
+escalation, Tier 3 OCR, metadata extraction, multi-page splitting,
+and the full end-to-end httptest → markdown path. All live tests
+skip cleanly when binaries are missing, matching the existing
+`chromiumAvailable()` pattern.
 
 ---
 

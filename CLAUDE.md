@@ -12,7 +12,20 @@ standalone CLI + library. It routes each URL through the cheapest
 engine that returns valid content. Persistent frontier, polite by
 default, single static binary.
 
-## Status (as of 2026-04-13)
+## Status (as of 2026-04-14)
+
+**Shipped (v0.7.0):** PDF engine. Parallel content-type branch off
+the HTTP engine — when a response's Content-Type is
+`application/pdf`, `internal/pdf.Extract` transforms the body to
+markdown and populates `metadata.pdf` with page count, title,
+author, per-page text, and which tier served. Three-tier internal
+ladder: `pdftotext` (plain) → `pdftotext -layout` → `pdftoppm +
+tesseract` OCR. OCR is opt-in via `--ocr` flag (off by default);
+command-start validation fails fast when the OCR toolchain is
+missing. Missing `pdftotext` soft-fails per-row with install hint
+(poppler-utils), so trawl stays useful for HTML even without the
+PDF toolchain. `--format html` on PDFs silently upgrades to
+markdown (logged once per run). See `docs/PDF.md`.
 
 **Shipped (v0.6.0):** proxy hardening — `--rotate-on-status
 403,429,503` retries through a different proxy on block codes
@@ -40,7 +53,7 @@ ctx propagation, debug progress logs).
 below 15% threshold). HTTP/2 SETTINGS frame forging (EVASION.md
 §8.3) — only matters for TLS + SETTINGS combo detectors.
 
-**Current direction:** proxy hardening shipped. Next targets are
+**Current direction:** v0.7.0 PDF engine shipped. Next targets
 consumer-driven. See `docs/ROADMAP.md`.
 
 ## Read these first
@@ -102,6 +115,7 @@ internal/extract/       goquery CSS extractor + FirstLink / AllLinks resolvers
 internal/failure/       Classify() — maps errors to discrete categories
 internal/frontier/      BadgerDB-backed URL queue (blocking Next for crawl)
 internal/output/        JSONL + CSV/TSV sinks, Record type, NewFile dispatcher
+internal/pdf/           PDF → markdown engine (pdftotext, pdfinfo, pdftoppm + tesseract OCR)
 internal/politeness/    robots.txt cache + per-domain rate/concurrency + per-host HostRules
 internal/action/        pre-scrape interactive actions (click/wait/scroll/type/sleep/evaluate)
 internal/router/        tiered escalation loop (w/ content cache hook + proxy rotation)
@@ -114,6 +128,7 @@ docs/ROADMAP.md         current phase status (source of truth)
 docs/SPEC.md            original PRD — historical design intent
 docs/BENCHMARK.md       operational playbook + Lightpanda decision rule
 docs/EVASION.md         anti-detection / stealth design doc (tiered opt-in)
+docs/PDF.md             PDF engine design doc (shell-out, tiered opt-in OCR)
 docs/RELEASING.md       release checklist (semver, tag flow, smoke tests)
 docs/DECISIONS.md       architectural decision log
 docs/TODO.md            standing commitments + open papercuts

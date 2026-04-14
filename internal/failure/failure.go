@@ -38,7 +38,14 @@ const (
 	CatFollowFailed     Category = "follow_failed"
 	CatTiersExhausted   Category = "all_tiers_exhausted"
 	CatSPAShell         Category = "spa_shell"
-	CatOther            Category = "other"
+	// CatPDFToolingMissing is set when trawl fetched a PDF successfully
+	// but the local environment lacks the binaries needed to extract
+	// text (pdftotext for Tier 1/2, or pdftoppm+tesseract for --ocr).
+	// The raw PDF bytes are preserved in the record body so downstream
+	// consumers can handle them; trawl just couldn't render to markdown.
+	// Semantically an extraction failure — the fetch worked.
+	CatPDFToolingMissing Category = "pdf_tooling_missing"
+	CatOther             Category = "other"
 )
 
 // IsReachable returns whether a category represents a successfully fetched
@@ -46,11 +53,13 @@ const (
 // docs/BENCHMARK.md — dead domains, TLS errors, 4xx/5xx, etc. don't count.
 //
 // CatExtractionFailed IS reachable: the fetch worked, only extraction broke.
+// CatPDFToolingMissing is the same shape — fetch succeeded, post-fetch
+// extraction couldn't run because local binaries are absent.
 // CatSPAShell is NOT reachable as a FINAL category: it only gets set when
 // every tier thought the page was an unhydrated SPA shell, i.e. no tier
 // ever returned real content.
 func (c Category) IsReachable() bool {
-	return c == CatSuccess || c == CatExtractionFailed
+	return c == CatSuccess || c == CatExtractionFailed || c == CatPDFToolingMissing
 }
 
 // Classify returns the best-fit category for a fetch outcome.
@@ -180,6 +189,7 @@ func AllCategories() []Category {
 		CatFollowFailed,
 		CatTiersExhausted,
 		CatSPAShell,
+		CatPDFToolingMissing,
 		CatOther,
 	}
 }

@@ -112,7 +112,7 @@ func TestClassifyRealWorld(t *testing.T) {
 }
 
 func TestIsReachable(t *testing.T) {
-	reachable := []Category{CatSuccess, CatExtractionFailed}
+	reachable := []Category{CatSuccess, CatExtractionFailed, CatPDFToolingMissing}
 	unreachable := []Category{
 		CatDNS, CatConnectionRefused, CatTLS, CatTimeout,
 		CatHTTP4xx, CatHTTP5xx, CatRobotsBlocked,

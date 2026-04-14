@@ -92,8 +92,13 @@ func (c defaultChecker) Check(p Page) Result {
 	case strings.Contains(ct, "application/json"),
 		strings.Contains(ct, "application/xml"),
 		strings.Contains(ct, "text/xml"),
-		strings.Contains(ct, "text/plain"):
+		strings.Contains(ct, "text/plain"),
+		strings.Contains(ct, "application/pdf"),
+		strings.Contains(ct, "application/x-pdf"):
 		// Non-HTML but still a valid, directly-usable response.
+		// PDFs are handled by the PDF engine at the record-build layer
+		// (see cmd/trawl.transformPDFIfNeeded). The router returns the
+		// raw bytes here; extraction happens downstream.
 		return Result{Valid: true}
 	case ct == "":
 		// Missing content-type; treat as HTML and fall through.

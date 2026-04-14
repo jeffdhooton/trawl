@@ -6,6 +6,117 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-14 — PDF engine: shell out to poppler, decline the standalone Rust competitor
+
+**Decision:** Build a PDF engine inside trawl that shells out to
+user-installed binaries (`pdftotext`, optionally `tesseract`) rather
+than (a) parsing PDFs in-process with a pure-Go library, (b) enabling
+CGO to bind `pdfium`/`mupdf`, or (c) building a standalone Rust PDF
+tool alongside trawl. The engine is a parallel content-type branch
+off the HTTP engine, not a new tier in the HTTP → Chromium ladder.
+Full shape is in `docs/PDF.md`.
+
+**Context:** Firecrawl shipped "Fire-PDF" in April 2026 — a Rust-
+based PDF parser with layout awareness and OCR. It's the last
+content-extraction capability trawl lacks per the ROADMAP gap
+analysis. Every trawl crawl of a research, government, or policy
+site today produces wrong output when it hits a PDF (raw bytes in
+`body`), so the floor for shipping *any* PDF handling is "better
+than current." The question was architectural, not whether.
+
+**What the data said:** No benchmark run — this is a design-phase
+call, not a performance call. The relevant facts were structural:
+
+- Go's native PDF libraries (`ledongthuc/pdf`, `pdfcpu`, `unipdf`)
+  are weak on multi-column and tables, have no native OCR, and
+  `unipdf` is commercial. None of them are in the same quality tier
+  as `pdftotext`/`marker`/`docling`.
+- Serious in-process PDF parsing with OCR needs `pdfium` + `tesseract`
+  under the hood. Go bindings (`klippa-app/go-pdfium`, `gosseract`)
+  are CGO wrappers. Enabling CGO violates SPEC §7 and breaks the
+  single-static-binary deploy story that's already paid off in
+  `v0.6.0` for proxy support and elsewhere.
+- A standalone Rust PDF tool is architecturally clean but the OSS
+  landscape is already crowded (`marker`, `docling`, `ocrs`, MinerU,
+  `pdf-extract`). Fire-PDF's "5x faster" claim benchmarks against
+  those mature tools with a team behind it. Building a new Rust tool
+  from scratch is a fun project but a bad allocation — trawl moves
+  forward this month with a shell-out engine, and an in-process Rust
+  parser can swap into the shell-out interface if it ever becomes
+  justified.
+- Shelling out to `pdftotext` keeps trawl pure-Go, pure-static-binary,
+  and lets users opt into more sophisticated tooling (marker,
+  docling) as a future Tier 3 without trawl itself growing any new
+  dependencies.
+
+**Why a parallel branch rather than a new tier:** trawl's existing
+tier ladder models "same content type, different rendering cost."
+PDF is a different content type entirely. Mixing PDF tiers into the
+HTML ladder would require every HTML tier to know what to do with
+bytes it can't render, and the routing decision is naturally driven
+by `Content-Type: application/pdf` from the HTTP response — a single
+header check, not a validity heuristic.
+
+**Scope calls locked in via `docs/PDF.md`:**
+
+1. **Text-layer + basic layout in v1** (Tiers 1 and 2 via
+   `pdftotext` and `pdftotext -layout`). OCR ships in v1 gated
+   behind `--ocr`, off by default. Scope-cutting item if schedule
+   slips: OCR moves to v1.1.
+2. **Soft-fail on missing `pdftotext`**, hard-fail at command-start
+   on missing `tesseract` when `--ocr` was passed. Reasoning: the
+   soft-fail keeps trawl useful for HTML on machines without poppler,
+   but OCR is an explicit opt-in and failing 100 URLs in before
+   discovering tesseract is missing is unfriendly.
+3. **Markdown default output + `metadata.pdf` struct** matching how
+   `metadata.page` is structured for HTML. Consumers using
+   `jq '.metadata.page.title'` work uniformly across HTML and PDF
+   inputs because the PDF engine copies title into `metadata.page`
+   as well.
+4. **Explicit non-goals:** in-process parsing, image extraction,
+   form-field extraction, password-protected PDFs, marker/docling
+   integration, PDF-shaped `--schema` extraction. All deferred
+   pending a concrete consumer ask.
+
+**What would change our minds (= redesign required):**
+
+- **A consumer shows `pdftotext` producing garbage that `marker` or
+  `docling` handles cleanly on the same document.** Tier 3 (Marker
+  integration) moves from "deferred" to "build" — the shell-out
+  interface is designed so this is a contained addition, but marker
+  has a Python/PyTorch dependency surface that we're not taking on
+  speculatively.
+- **A consumer needs structured PDF extraction** (form fields,
+  tables-as-cells, figure bounding boxes). That's a different
+  feature shape; parallel design doc, not a mutation of PDF.md.
+- **OCR becomes a hot path rather than an opt-in niche** (>30% of
+  PDFs in real use are scanned). If so, the default-off stance is
+  wrong and OCR moves into the main escalation ladder. Unlikely
+  for general-purpose scraping, plausible for specific verticals.
+- **`pdftotext` becomes the bottleneck at scale.** The fix would be
+  batching (one invocation over many docs) or a long-lived worker
+  process. Both are non-trivial and would be explicit additions to
+  the engine design, not silent changes.
+- **Someone credibly argues for CGO.** The SPEC §7 rule is durable,
+  but it's not a religious commitment — if a CGO-enabled build
+  variant (`trawl-cgo`) could ship alongside the pure-Go binary and
+  the maintenance cost is bounded, that's a future DECISIONS.md
+  entry. Nothing about the shell-out engine forecloses it.
+
+**What this does NOT change:**
+
+- SPEC §7's no-CGO rule stands. This decision is *compatible* with
+  no-CGO by design, not a precedent for waiving it.
+- The existing tier ladder (HTTP → Chromium) is untouched.
+- Nothing about trawl's politeness model, robots.txt handling, or
+  tier-learning needs to change to accommodate PDFs — the content-
+  type branch inherits all of it.
+
+**Authored during session:** 2026-04-14. Design doc
+`docs/PDF.md` written in the same session. Implementation pending.
+
+---
+
 ## 2026-04-11 — Tier 3 evasion (Chrome JA4 forgery): also speculative ship, narrow scope, accept maintenance commitment
 
 **Decision:** Ship `--tls-match chrome` (Tier 3 ClientHello forgery

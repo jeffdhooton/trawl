@@ -1,0 +1,24 @@
+{
+  "totals": {
+    "urls": 10,
+    "ocr_available": true
+  },
+  "no_ocr_outcomes": {
+    "success": 8,
+    "extraction_failed": 2
+  },
+  "with_ocr_outcomes": {
+    "success": 10
+  },
+  "tier_distribution": {
+    "no_ocr": {
+      "pdftotext": 8
+    },
+    "with_ocr": {
+      "pdftotext": 8,
+      "tesseract": 2
+    }
+  },
+  "ocr_activated": 2,
+  "ocr_rescued": 2
+}

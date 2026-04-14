@@ -89,6 +89,17 @@ go build ./cmd/trawl
 Trawl has no CGO dependencies and produces a single static binary
 suitable for copying onto a $5 VPS.
 
+**Optional dependencies** (not bundled; trawl works without them):
+
+- `poppler-utils` enables PDF → markdown extraction (see
+  `docs/PDF.md`). Install via `brew install poppler` (macOS) or
+  `apt install poppler-utils` (Debian/Ubuntu). Missing poppler =
+  PDFs soft-fail with a clear install hint; HTML crawls are
+  unaffected.
+- `tesseract` enables `--ocr` for scanned PDFs. Install via
+  `brew install tesseract` (macOS) or `apt install tesseract-ocr`
+  (Debian/Ubuntu). Required only when `--ocr` is passed.
+
 ## What it does
 
 - **Tiered routing.** Each URL starts at HTTP (`net/http` + `goquery`);
@@ -164,6 +175,14 @@ suitable for copying onto a $5 VPS.
   a pool and assigns each target domain to a fixed proxy (per-domain-
   sticky rotation). Works on HTTP, uTLS, and chromium tiers. Proxied
   records are stamped with `metadata.evasion.proxy: true`.
+- **PDF extraction.** PDFs served by a crawl target automatically get
+  extracted to markdown via `pdftotext` (tried plain, escalated to
+  `-layout` mode when the plain output is empty). Full `metadata.pdf`
+  struct with page count, title, author, and per-page text. Opt-in
+  OCR for scanned PDFs via `--ocr` (requires `tesseract` +
+  `pdftoppm`, off by default). No CGO — shells out to the user's
+  installed poppler-utils; soft-fails with install hint if missing.
+  See `docs/PDF.md`.
 - **Failure classification + stats.** Every job emits a `stats.json`
   with reachable/unreachable counts, per-category failure breakdown,
   per-tier latency, chromium escalation rate, and fallback yield.

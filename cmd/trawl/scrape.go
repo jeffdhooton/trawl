@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/jeffdhooton/trawl/internal/extract"
 	"github.com/jeffdhooton/trawl/internal/failure"
 	"github.com/jeffdhooton/trawl/internal/output"
+	"github.com/jeffdhooton/trawl/internal/pdf"
 	"github.com/jeffdhooton/trawl/internal/politeness"
 	"github.com/jeffdhooton/trawl/internal/router"
 	"github.com/jeffdhooton/trawl/internal/schema"
@@ -54,6 +56,7 @@ type scrapeOpts struct {
 	evasion        evasionOpts
 	inlineActions  []string
 	actionsPath    string
+	pdf            pdfFlags
 }
 
 func newScrapeCmd() *cobra.Command {
@@ -125,6 +128,7 @@ Use --selector name=css multiple times to extract structured fields:
 		"YAML/JSON file with a sequence of pre-scrape actions (chromium only)")
 	registerProxyFlags(cmd, &opts.proxy)
 	registerEvasionFlags(cmd, &opts.evasion)
+	registerPDFFlags(cmd, &opts.pdf)
 
 	return cmd
 }
@@ -225,11 +229,17 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	}
 	defer release()
 
+	if err := validatePDFFlags(opts.pdf); err != nil {
+		return err
+	}
+	logPDFConfig(opts.pdf)
+
 	copts := contentOpts{
 		format:        opts.format,
 		readability:   opts.readability,
 		noMetadata:    opts.noMetadata,
 		screenshotDir: opts.screenshotDir,
+		pdfOpts:       applyPDFFlags(opts.pdf),
 	}
 	if err := validateFormat(copts.format); err != nil {
 		return err
@@ -328,6 +338,11 @@ type contentOpts struct {
 	// etc.) that run after page load before DOM capture. Only the
 	// chromium engine executes them; HTTP ignores them.
 	actions []chromedp.Action
+	// pdfOpts controls the PDF engine's tier behavior for responses
+	// whose Content-Type is application/pdf. Zero value means "Tier
+	// 1+2 only, no OCR" — the default when --ocr isn't set. Phase 5
+	// wires the CLI flags that populate the non-zero fields.
+	pdfOpts pdf.Opts
 }
 
 // routeAndBuild runs one URL through the tiered router and builds the
@@ -383,6 +398,31 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 		rec.Error = routeErr.Error()
 		rec.FailureCategory = string(failure.Classify(routeErr, rec.StatusCode, rec.Error))
 		return rec, best, routeErr
+	}
+
+	// PDF transform runs BEFORE the HTML-gated pipeline. On success,
+	// best.Body becomes extracted markdown and best.ContentType flips
+	// to text/markdown, so the isHTML() gates below correctly skip
+	// HTML-specific steps. On hard extraction failure (encrypted,
+	// damaged, empty) rec.Error is set and we short-circuit the
+	// pipeline — the raw bytes stay on best.Body for downstream.
+	// On soft-fail (pdftotext missing) the raw PDF bytes are preserved
+	// and we still short-circuit so no HTML pipeline runs on PDF bytes.
+	if wasPDF := transformPDFIfNeeded(best, &rec, copts.pdfOpts); wasPDF && rec.Error != "" {
+		return rec, best, nil
+	}
+
+	// PDF title is the most useful signal when a consumer is doing
+	// `jq '.metadata.page.title'` across mixed HTML+PDF batches. Copy
+	// it into metadata.page.title when the HTML metadata extractor
+	// won't run (PDFs skip isHTML).
+	if rec.Metadata.PDF != nil && rec.Metadata.PDF.Title != "" {
+		if rec.Metadata.Page == nil {
+			rec.Metadata.Page = &extract.PageMetadata{}
+		}
+		if rec.Metadata.Page.Title == "" {
+			rec.Metadata.Page.Title = rec.Metadata.PDF.Title
+		}
 	}
 
 	// Page metadata is extracted from the ORIGINAL body, before any
@@ -444,13 +484,35 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 
 	// Populate the Body field if --format was set. Empty format means
 	// existing JSONL consumers stay backward-compatible (no body in the
-	// record). html passes through verbatim; markdown runs the converter.
+	// record). html passes through verbatim; markdown runs the
+	// converter. When the source was a PDF, --format html is silently
+	// upgraded to markdown — PDF bytes aren't useful HTML, and the
+	// extracted text already is valid CommonMark.
 	if best != nil && copts.format != "" {
+		fromPDF := rec.Metadata.PDF != nil
 		switch copts.format {
 		case "html":
-			rec.Body = string(contentBody)
-			rec.BodyFormat = "html"
+			if fromPDF {
+				pdfFormatOverrideOnce.Do(func() {
+					log.Warn().
+						Str("url", rec.CanonicalURL).
+						Msg("--format html requested on PDF response; emitting markdown (PDF bytes are not useful HTML)")
+				})
+				rec.Body = string(contentBody)
+				rec.BodyFormat = "markdown"
+			} else {
+				rec.Body = string(contentBody)
+				rec.BodyFormat = "html"
+			}
 		case "markdown":
+			if fromPDF {
+				// contentBody is already the PDF-extracted markdown;
+				// running it through the HTML-to-markdown converter
+				// would corrupt it.
+				rec.Body = string(contentBody)
+				rec.BodyFormat = "markdown"
+				break
+			}
 			md, err := extract.ToMarkdown(contentBody, rec.CanonicalURL)
 			if err != nil {
 				// Converter failure → log into Metadata but don't fail
@@ -534,6 +596,98 @@ func validateFormat(format string) error {
 func isHTML(contentType string) bool {
 	ct := strings.ToLower(contentType)
 	return ct == "" || strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml")
+}
+
+// isPDF reports whether a Content-Type header indicates a PDF response.
+// Unlike isHTML, empty content-type is NOT treated as PDF — we only
+// transform bytes when the server explicitly labeled them.
+func isPDF(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.Contains(ct, "application/pdf") || strings.Contains(ct, "application/x-pdf")
+}
+
+// pdfToolingHintOnce logs the "install poppler-utils" hint at most once
+// per run so batch jobs don't spam N identical lines. Reset per-process
+// is fine — trawl runs are short-lived.
+var pdfToolingHintOnce sync.Once
+
+// pdfFormatOverrideOnce logs the "--format html on PDF emits markdown"
+// warning once per run. PDF.md §6.2 established that PDF bytes aren't
+// useful HTML, so we override silently-but-transparently.
+var pdfFormatOverrideOnce sync.Once
+
+// transformPDFIfNeeded runs internal/pdf.Extract when the result's
+// Content-Type indicates a PDF. On success, it replaces best.Body with
+// extracted markdown, swaps best.ContentType to text/markdown, and
+// populates rec.Metadata.PDF. On soft-fail (missing pdftotext), it sets
+// rec.FailureCategory so the row flows through as a reachable
+// extraction failure with the raw PDF bytes intact. On hard-fail
+// (ErrEncrypted, damaged PDF, ErrEmptyExtraction), it sets rec.Error
+// and returns — the caller treats this as a row-level extraction error
+// and stops the HTML-gated pipeline from running against PDF bytes.
+//
+// Returns true when the transform (attempted or completed) should stop
+// the HTML-gated pipeline from running. For soft-fail with raw bytes
+// preserved, callers should still skip HTML-shaped processing because
+// the bytes are PDF, not HTML.
+func transformPDFIfNeeded(best *engine.Result, rec *output.Record, opts pdf.Opts) bool {
+	if best == nil || !isPDF(best.ContentType) {
+		return false
+	}
+
+	md, info, err := pdf.Extract(best.Body, opts)
+	if err != nil {
+		// Missing binary → soft-fail: keep the raw PDF in best.Body so
+		// downstream consumers can handle it, stamp a distinct failure
+		// category, log the install hint once.
+		if errors.Is(err, pdf.ErrPdftotextMissing) {
+			rec.FailureCategory = string(failure.CatPDFToolingMissing)
+			rec.Error = err.Error()
+			pdfToolingHintOnce.Do(func() {
+				log.Warn().
+					Str("hint", pdf.InstallHint("pdftotext")).
+					Msg("PDF encountered but pdftotext is not installed; raw bytes preserved in body")
+			})
+			return true
+		}
+		// Hard extraction failures (encrypted, damaged, empty). Record
+		// the error but keep the raw bytes available for downstream
+		// troubleshooting — same shape as the soft-fail path.
+		rec.Error = "pdf: " + err.Error()
+		rec.FailureCategory = string(failure.CatExtractionFailed)
+		return true
+	}
+
+	// Success: swap in the extracted markdown and update metadata.
+	best.Body = md
+	best.ContentType = "text/markdown"
+	rec.Metadata.ContentType = "text/markdown"
+	rec.Metadata.BodyBytes = len(md)
+	rec.Metadata.PDF = &output.PDFInfo{
+		PageCount:     info.PageCount,
+		Title:         info.Title,
+		Author:        info.Author,
+		CreatedAt:     info.CreatedAt,
+		HasTextLayer:  info.HasTextLayer,
+		UsedOCR:       info.UsedOCR,
+		ExtractorTier: info.ExtractorTier,
+		Pages:         toOutputPages(info.Pages),
+	}
+	return true
+}
+
+// toOutputPages copies the internal/pdf.Page slice into the
+// output.PDFPage shape. Distinct types keep the output package free of
+// an internal/pdf import.
+func toOutputPages(pages []pdf.Page) []output.PDFPage {
+	if len(pages) == 0 {
+		return nil
+	}
+	out := make([]output.PDFPage, len(pages))
+	for i, p := range pages {
+		out[i] = output.PDFPage{Number: p.Number, Text: p.Text}
+	}
+	return out
 }
 
 func hashBody(b []byte) string {

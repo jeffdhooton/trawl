@@ -1,0 +1,142 @@
+[
+  {
+    "url": "https://arxiv.org/pdf/1706.03762",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://arxiv.org/pdf/1810.04805",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://arxiv.org/pdf/1512.03385",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://arxiv.org/pdf/2005.14165",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://arxiv.org/pdf/1409.0473",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://www.irs.gov/pub/irs-pdf/f1040.pdf",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://www.irs.gov/pub/irs-pdf/i1040gi.pdf",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://www.govinfo.gov/content/pkg/CFR-2024-title1-vol1/pdf/CFR-2024-title1-vol1.pdf",
+    "expected": "TL",
+    "observed": "TL",
+    "no_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext"
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "pdftotext",
+      "used_ocr": false
+    }
+  },
+  {
+    "url": "https://archive.org/download/CIA-RDP93B01194R001200150036-4/CIA-RDP93B01194R001200150036-4.pdf",
+    "expected": "OCR",
+    "observed": "OCR",
+    "no_ocr": {
+      "outcome": "extraction_failed",
+      "tier": null
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "tesseract",
+      "used_ocr": true
+    }
+  },
+  {
+    "url": "https://archive.org/download/CIA-RDP84-00780R004700100007-5/CIA-RDP84-00780R004700100007-5.pdf",
+    "expected": "OCR",
+    "observed": "OCR",
+    "no_ocr": {
+      "outcome": "extraction_failed",
+      "tier": null
+    },
+    "with_ocr": {
+      "outcome": "success",
+      "tier": "tesseract",
+      "used_ocr": true
+    }
+  }
+]

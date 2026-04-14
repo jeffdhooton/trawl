@@ -43,6 +43,7 @@ type crawlOpts struct {
 	evasion        evasionOpts
 	inlineActions  []string
 	actionsPath    string
+	pdf            pdfFlags
 
 	// Crawl-specific knobs.
 	depth      int
@@ -129,6 +130,7 @@ Example:
 		"YAML/JSON file with a sequence of pre-scrape actions (chromium only)")
 	registerProxyFlags(cmd, &opts.proxy)
 	registerEvasionFlags(cmd, &opts.evasion)
+	registerPDFFlags(cmd, &opts.pdf)
 
 	cmd.Flags().IntVar(&opts.depth, "depth", 2,
 		"maximum BFS depth relative to the seed (seed is depth 0)")
@@ -150,6 +152,10 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 	if err := validateFormat(opts.format); err != nil {
 		return err
 	}
+	if err := validatePDFFlags(opts.pdf); err != nil {
+		return err
+	}
+	logPDFConfig(opts.pdf)
 	if opts.depth < 0 {
 		return fmt.Errorf("--depth must be >= 0")
 	}
@@ -205,6 +211,9 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		TLSMatch:          opts.evasion.tlsMatch,
 		InlineActions:     opts.inlineActions,
 		ActionsPath:       opts.actionsPath,
+		OCR:               opts.pdf.ocr,
+		OCRLang:           opts.pdf.ocrLang,
+		PDFMaxPages:       opts.pdf.pdfMaxPages,
 		CrawlMode:       true,
 		CrawlMaxDepth:   opts.depth,
 		CrawlSameDomain: opts.sameDomain,

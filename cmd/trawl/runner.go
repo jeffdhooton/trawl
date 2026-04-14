@@ -15,6 +15,7 @@ import (
 	"github.com/jeffdhooton/trawl/internal/failure"
 	"github.com/jeffdhooton/trawl/internal/frontier"
 	"github.com/jeffdhooton/trawl/internal/output"
+	"github.com/jeffdhooton/trawl/internal/pdf"
 	"github.com/jeffdhooton/trawl/internal/politeness"
 	"github.com/jeffdhooton/trawl/internal/router"
 	"github.com/jeffdhooton/trawl/internal/schema"
@@ -215,6 +216,11 @@ func runJob(ctx context.Context, jobDir string, cfg *JobConfig) error {
 		readability:   cfg.Readability,
 		noMetadata:    cfg.NoMetadata,
 		screenshotDir: cfg.ScreenshotDir,
+		pdfOpts: pdf.Opts{
+			UseOCR:   cfg.OCR,
+			OCRLang:  cfg.OCRLang,
+			MaxPages: cfg.PDFMaxPages,
+		},
 	}
 	if cfg.SchemaPath != "" {
 		s, err := schema.Load(cfg.SchemaPath)

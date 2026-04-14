@@ -10,6 +10,30 @@ import (
 	"github.com/jeffdhooton/trawl/internal/extract"
 )
 
+// PDFInfo is the durable per-document metadata extracted from a PDF
+// response by internal/pdf. Populated only when the source was a PDF;
+// nil for every HTML record. Mirrors internal/pdf.Info — kept separate
+// so the output package has no dependency on internal/pdf.
+type PDFInfo struct {
+	PageCount     int       `json:"page_count,omitempty"`
+	Title         string    `json:"title,omitempty"`
+	Author        string    `json:"author,omitempty"`
+	CreatedAt     time.Time `json:"created_at,omitempty"`
+	HasTextLayer  bool      `json:"has_text_layer,omitempty"`
+	UsedOCR       bool      `json:"used_ocr,omitempty"`
+	ExtractorTier string    `json:"extractor_tier,omitempty"` // "pdftotext" | "pdftotext-layout" | "tesseract"
+	Pages         []PDFPage `json:"pages,omitempty"`
+}
+
+// PDFPage is one page's extracted text with its 1-based page number.
+// Consumers that need per-page access (citation linking, region
+// selection) reach for metadata.pdf.pages rather than re-splitting the
+// markdown body.
+type PDFPage struct {
+	Number int    `json:"number"`
+	Text   string `json:"text"`
+}
+
 // Record is the canonical shape of one scraped page's output.
 // The JSON tags are the stable on-disk format.
 type Record struct {
@@ -57,6 +81,11 @@ type Metadata struct {
 	// size they were before evasion shipped. The presence of this
 	// field is the audit trail for "was this crawl polite or not."
 	Evasion *EvasionStats `json:"evasion,omitempty"`
+	// PDF is populated when the fetched content was application/pdf
+	// and internal/pdf.Extract successfully produced markdown. Nil for
+	// HTML records. The pointer keeps default JSONL records the same
+	// size they were before the PDF engine shipped.
+	PDF *PDFInfo `json:"pdf,omitempty"`
 }
 
 // EvasionStats records the active anti-detection features for one

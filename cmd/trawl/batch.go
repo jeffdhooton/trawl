@@ -45,6 +45,7 @@ type batchOpts struct {
 	evasion          evasionOpts
 	inlineActions    []string
 	actionsPath      string
+	pdf              pdfFlags
 }
 
 func newBatchCmd() *cobra.Command {
@@ -125,6 +126,7 @@ gracefully and prints a resume command.`,
 		"YAML/JSON file with a sequence of pre-scrape actions (chromium only)")
 	registerProxyFlags(cmd, &opts.proxy)
 	registerEvasionFlags(cmd, &opts.evasion)
+	registerPDFFlags(cmd, &opts.pdf)
 
 	return cmd
 }
@@ -146,6 +148,10 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 	if err := validateFormat(opts.format); err != nil {
 		return err
 	}
+	if err := validatePDFFlags(opts.pdf); err != nil {
+		return err
+	}
+	logPDFConfig(opts.pdf)
 
 	id := opts.jobID
 	if id == "" {
@@ -198,6 +204,9 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		TLSMatch:          opts.evasion.tlsMatch,
 		InlineActions:     opts.inlineActions,
 		ActionsPath:       opts.actionsPath,
+		OCR:               opts.pdf.ocr,
+		OCRLang:           opts.pdf.ocrLang,
+		PDFMaxPages:       opts.pdf.pdfMaxPages,
 	}
 	if err := cfg.save(dir); err != nil {
 		return err

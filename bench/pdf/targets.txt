@@ -1,0 +1,52 @@
+# bench/pdf/targets.txt — real-world PDF URLs for exercising the v0.7.0 engine.
+#
+# Format: one URL per line. Inline comments (# ... to end of line) after the
+# URL document the expected category. Leading #-only lines are ignored.
+#
+# Categories (for the post-run report):
+#   TL   — text-layer; Tier 1 or Tier 2 should succeed without --ocr
+#   OCR  — scanned/image-only; requires --ocr (Tier 3) for success
+#   MIX  — may go either way depending on the specific doc
+#
+# Update freely — URLs rot. The bench tolerates 404s by reporting them as
+# http_4xx; categories are for reporting/validation, not hard expectations.
+
+# ── Text-layer canaries (arXiv — stable URLs, all text-layer) ──────────
+
+https://arxiv.org/pdf/1706.03762  # TL  Attention Is All You Need (Transformer)
+https://arxiv.org/pdf/1810.04805  # TL  BERT
+https://arxiv.org/pdf/1512.03385  # TL  ResNet
+https://arxiv.org/pdf/2005.14165  # TL  GPT-3
+https://arxiv.org/pdf/1409.0473   # TL  Neural Machine Translation by Jointly Learning to Align and Translate
+
+# ── Government text-layer forms ────────────────────────────────────────
+
+https://www.irs.gov/pub/irs-pdf/f1040.pdf       # TL  IRS Form 1040 (current year)
+https://www.irs.gov/pub/irs-pdf/i1040gi.pdf     # TL  IRS 1040 instructions
+
+# ── GovInfo — Code of Federal Regulations (modern editions: text-layer) ─
+
+https://www.govinfo.gov/content/pkg/CFR-2024-title1-vol1/pdf/CFR-2024-title1-vol1.pdf  # TL  1 CFR Vol 1 (2024 edition, full volume)
+
+# ── OCR canaries (scanned / image-only) ────────────────────────────────
+#
+# These are Internet Archive mirrors of CIA FOIA Reading Room documents.
+# pdftotext against them returns ~0 bytes (image-only, no text layer).
+# Expect these to fail Run 1 with extraction_failed and succeed Run 2
+# with extractor_tier=tesseract, used_ocr=true.
+
+https://archive.org/download/CIA-RDP93B01194R001200150036-4/CIA-RDP93B01194R001200150036-4.pdf  # OCR  "DECLASSIFIED DOCUMENTS" memo, 1975
+https://archive.org/download/CIA-RDP84-00780R004700100007-5/CIA-RDP84-00780R004700100007-5.pdf  # OCR  "PRESIDENTIAL EMERGENCY ACTION DOCUMENTS", 3pg
+
+# The direct CIA readingroom URL pattern
+# (https://www.cia.gov/readingroom/docs/<id>.pdf) requires a session
+# cookie and anti-bot handshake; the Internet Archive mirrors skip
+# that and serve the same PDFs cleanly. Add more candidates by
+# browsing https://archive.org/details/CIADocuments or searching for
+# "CIA-RDP" on archive.org.
+#
+# Other scanned-document sources worth adding:
+#   NARA: https://www.archives.gov/research
+#   Historical census: https://www.census.gov/library/publications/
+#   Internet Archive /details/<identifier> pages — check the "Download
+#   Options" list for a direct .pdf URL.

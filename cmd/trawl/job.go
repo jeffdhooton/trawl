@@ -68,6 +68,13 @@ type JobConfig struct {
 	InlineActions []string `json:"inline_actions,omitempty"`
 	ActionsPath   string   `json:"actions_path,omitempty"`
 
+	// PDF engine knobs. Persisted so resumed jobs keep the same tier
+	// behavior — resuming with a different --ocr state would silently
+	// change extraction quality mid-job.
+	OCR         bool   `json:"ocr,omitempty"`
+	OCRLang     string `json:"ocr_lang,omitempty"`
+	PDFMaxPages int    `json:"pdf_max_pages,omitempty"`
+
 	// Crawl mode — set by `trawl crawl`. When CrawlMode is true, runJob
 	// uses BlockingNext, enqueues discovered children at depth+1, and
 	// terminates when the frontier reports quiescence. Batch and resume
