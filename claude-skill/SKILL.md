@@ -1,16 +1,19 @@
 ---
 name: trawl
-version: 0.4.0
+version: 0.7.1
 description: |
   Tiered web scraping for AI agents. HTTP → Chromium routing with persistent
   frontier, resumable batch jobs, BFS crawl, sitemap discovery, URL mapping,
   clean markdown/JSON extraction, page metadata, CSS selectors, YAML schema
-  extraction (v2: fallback selectors + transforms), and interactive pre-scrape
-  actions (click, scroll, wait, type, evaluate). Feature-parity with Firecrawl
-  on in-scope items — runs as a local static binary, no API key, no runtime
-  dependency. Use when asked to "scrape", "crawl", "extract pages", "get
-  markdown from a site", "enumerate URLs", "scrape a list of companies",
-  "map a site", or anytime the task is bulk content-in / clean-JSONL-out.
+  extraction (v2: fallback selectors + transforms), interactive pre-scrape
+  actions (click, scroll, wait, type, evaluate), PDF extraction with optional
+  OCR for scans, proxy support (single + rotating pool), and anti-detection
+  tiers (browser-like headers, chromium stealth, Chrome TLS fingerprint
+  forgery). Feature-parity with Firecrawl on in-scope items — runs as a local
+  static binary, no API key, no runtime dependency. Use when asked to
+  "scrape", "crawl", "extract pages", "get markdown from a site", "enumerate
+  URLs", "scrape a list of companies", "map a site", "extract text from a
+  PDF", or anytime the task is bulk content-in / clean-JSONL-out.
 allowed-tools:
   - Bash
   - Read
@@ -45,6 +48,9 @@ composable with Unix pipes.
 | Interact with a single page (click, fill, assert) | **`/browse`** | Trawl doesn't interact -- it extracts. `/browse` is for stateful QA. |
 | Read one page inline for a one-off reference | **`WebFetch`** | Trawl is overkill for single casual lookups -- use WebFetch for "just tell me what this page says". |
 | Scrape with LLM extraction | **`trawl scrape --format markdown` → pipe to LLM** | Trawl explicitly stays out of the LLM business. Clean markdown out, LLM downstream. |
+| Extract a PDF to markdown | **`trawl scrape <pdf-url>`** (auto) | Content-type dispatch — PDFs are transformed in place when the server returns `application/pdf`. Add `--ocr` for scanned PDFs. |
+| Crawl hostile / bot-protected sites | **`trawl batch --browser-like --stealth --tls-match chrome`** | Opt-in evasion tiers (see [`docs/EVASION.md`](https://github.com/jeffdhooton/trawl/blob/main/docs/EVASION.md)). Polite-by-default otherwise. |
+| Validate a proxy before a long job | **`trawl proxy-test --proxy-file proxies.txt`** | Checks each proxy's exit IP, latency, and diff vs your direct IP before you commit to a multi-hour crawl. |
 
 **Rule of thumb:** if the output you want is a JSONL file with multiple
 records, trawl is the right tool. If the output is "did the click work?",
@@ -59,8 +65,8 @@ Before running any command, verify the binary is on PATH:
 ```bash
 if ! command -v trawl >/dev/null 2>&1; then
   echo "trawl not installed"
-  echo "  install: go install github.com/jeffdhooton/trawl/cmd/trawl@latest"
-  echo "  or clone the repo and run: ./install.sh"
+  echo "  one-liner: curl -fsSL https://raw.githubusercontent.com/jeffdhooton/trawl/main/scripts/install.sh | sh"
+  echo "  or via Go: go install github.com/jeffdhooton/trawl/cmd/trawl@latest"
   exit 1
 fi
 trawl version
@@ -68,6 +74,22 @@ trawl version
 
 If `trawl` is not present, offer to install it via the command above. Don't
 proceed with scraping work until the binary exists.
+
+**Optional system dependencies** — check these only when the user's task
+involves PDFs or scans:
+
+```bash
+# pdftotext (Tier 1/2 PDF extraction)
+command -v pdftotext >/dev/null 2>&1 || echo "pdftotext missing — install poppler-utils for PDF support"
+
+# tesseract + pdftoppm (Tier 3 OCR — only needed for --ocr)
+if ! command -v tesseract >/dev/null 2>&1 || ! command -v pdftoppm >/dev/null 2>&1; then
+  echo "OCR toolchain missing — install tesseract + poppler-utils"
+fi
+```
+
+Missing `pdftotext` is a soft-fail (HTML still works); missing
+`tesseract` only matters when `--ocr` is requested.
 
 ---
 
@@ -77,6 +99,7 @@ proceed with scraping work until the binary exists.
 Need to scrape content from the web
 │
 ├── One URL? ────────────────────────▶ trawl scrape <url>
+│       └── Is it a PDF? ────────────▶ (auto — add --ocr if scanned)
 │
 ├── List of URLs (file / CSV)? ──────▶ trawl batch urls.txt
 │
@@ -85,8 +108,16 @@ Need to scrape content from the web
 ├── Just need URLs (not content)? ───▶ trawl map <url>
 │       └── Or only from sitemaps? ──▶ trawl sitemap <url>
 │
+├── Validate proxies before a job? ──▶ trawl proxy-test --proxy-file <f>
+│
 └── Interrupted job to resume? ──────▶ trawl resume <job-id>
 ```
+
+**Content-type dispatch**: trawl inspects the response Content-Type on
+every fetch. `application/pdf` is transformed to markdown via
+`pdftotext` automatically — same command surface as HTML, different
+downstream pipeline. No separate command, no flag needed in the default
+case; add `--ocr` only when targets include scanned/image-only PDFs.
 
 ---
 
@@ -276,6 +307,164 @@ Trawl reopens the frontier, re-queues any in-flight URLs that didn't complete,
 and drains the remaining work using the same configuration saved at job
 creation time. No flags needed -- the job's own state has everything.
 
+### 10. Extract PDFs (text-layer or scanned)
+
+PDFs work out of the box — when the server returns `application/pdf`, trawl
+transforms the body to markdown via `pdftotext` and populates
+`metadata.pdf` with `page_count`, `title`, `author`, `has_text_layer`,
+`used_ocr`, `extractor_tier`, and per-page text.
+
+```bash
+# Text-layer PDF (research paper, government form, etc.)
+trawl scrape https://arxiv.org/pdf/1706.03762 --format markdown -o paper.jsonl
+
+# Scanned PDF (older declassified doc, historical archive)
+trawl scrape https://example.com/scanned.pdf \
+  --format markdown \
+  --ocr \
+  --pdf-max-pages 20 \
+  -o scan.jsonl
+
+# Batch mixed PDFs + HTML — trawl dispatches per-record by Content-Type
+trawl batch mixed-urls.txt --format markdown --ocr -o mixed.jsonl
+```
+
+**Dependencies** (install separately; trawl shells out):
+
+- `poppler-utils` for Tier 1/2 (`pdftotext`). Missing → soft-fail per
+  row with `failure_category: pdf_tooling_missing` and a clear install
+  hint. HTML crawls unaffected.
+- `tesseract` + `pdftoppm` for Tier 3 OCR (`--ocr`). Missing → hard-fail
+  at command start, before any URLs are fetched. Install via
+  `brew install tesseract` or `apt install tesseract-ocr`.
+
+**Tier ladder inside the PDF engine** (same validity → escalate pattern
+as the main HTTP → Chromium router):
+
+1. `pdftotext` plain — ~100ms, handles the vast majority of modern PDFs.
+2. `pdftotext -layout` — preserves columns/tables, escalated when Tier 1
+   output is empty.
+3. `tesseract` OCR — only fires with `--ocr` and only when Tier 1+2
+   both returned empty. Caps pages at `--pdf-max-pages` (default 50).
+
+**Non-goals**: form fields, image extraction, password-protected PDFs,
+CSS-selector `--schema` extraction against PDFs. See
+[`docs/PDF.md`](https://github.com/jeffdhooton/trawl/blob/main/docs/PDF.md)
+for the full scope.
+
+### 11. Route through a proxy
+
+```bash
+# Single gateway proxy — all requests route through it
+trawl batch urls.txt \
+  --proxy http://user:pass@gateway.proxy.com:7000 \
+  -o results.jsonl
+
+# Rotating pool — per-domain sticky assignment (same domain → same proxy
+# for the job's lifetime, different domains spread across pool)
+trawl batch urls.txt \
+  --proxy-file proxies.txt \
+  -o results.jsonl
+
+# Rotate proxies on block status codes (403/429/503) and retry same tier
+trawl batch urls.txt \
+  --proxy-file proxies.txt \
+  --rotate-on-status 403,429,503 \
+  --rotate-retries 2 \
+  -o results.jsonl
+
+# Pre-flight check proxies before a long run
+trawl proxy-test --proxy-file proxies.txt
+```
+
+Proxied records are stamped with `metadata.evasion.proxy: true`. Works
+on HTTP, uTLS (`--tls-match chrome`), and chromium tiers. Chromium uses
+the first proxy in the pool (Chrome's `--proxy-server` flag is
+process-wide).
+
+**`proxy-test` output**:
+
+```
+proxy: http://user:***@gate.proxy.com:7000  exit=203.0.113.42  latency=284ms  OK
+proxy: http://user:***@gate2.proxy.com:7000 exit=203.0.113.43  latency=310ms  OK
+```
+
+Use it to catch "proxy's exit IP equals your direct IP" misconfigurations
+before they cost you a full crawl.
+
+### 12. Opt-in evasion tiers (hostile / bot-protected sites)
+
+Trawl is polite-by-default: declared User-Agent, robots-respecting,
+rate-limited. For hostile targets (fingerprint-based bot detection), three
+opt-in tiers are available — each layer is additive.
+
+```bash
+# Tier 1: browser-like HTTP (rotating UAs, full Chrome header set,
+# in-memory cookie jar, ±20% timing jitter)
+trawl scrape https://hostile.example.com \
+  --browser-like \
+  --format markdown
+
+# Tier 2: chromium stealth (navigator.webdriver patch, WebGL fingerprint
+# mask, plugins spoofing — requires chromium tier)
+trawl scrape https://hostile.example.com \
+  --browser-like \
+  --stealth \
+  --tiers chromium \
+  --format markdown
+
+# Tier 3: Chrome TLS fingerprint forgery (JA3/JA4 match via uTLS with
+# full HTTP/2 support). Affects the HTTP tier only — chromium uses
+# its own real Chrome TLS stack.
+trawl scrape https://hostile.example.com \
+  --browser-like \
+  --tls-match chrome \
+  --format markdown
+```
+
+**When to reach for each tier** (see
+[`docs/EVASION.md`](https://github.com/jeffdhooton/trawl/blob/main/docs/EVASION.md)
+for the full decision matrix):
+
+- `--browser-like` — start here. Solves UA- and header-gated blocks.
+- `--stealth` — add when a site serves content but JS fingerprinting
+  returns empty/degraded bodies.
+- `--tls-match chrome` — add when HTTP returns 403/429 at the TLS layer
+  (before any request body inspection). Rarely needed as of 2026-04.
+
+**Hard rule — trawl does not defeat CAPTCHAs.** If a site serves a
+challenge page (Cloudflare, reCAPTCHA, Turnstile), that's a "you lost"
+state. Stop evading, ask the site for API access, or pay a
+CAPTCHA-solving service — not trawl's job.
+
+### 13. Tune retries and per-host politeness
+
+```bash
+# HTTP retries on transient failures (429, 5xx, connection resets) —
+# exponential backoff with ±25% jitter, capped at 10s including jitter.
+trawl batch urls.txt --retries 3 --retry-delay 500ms
+
+# Per-host overrides via YAML (exact host or *.suffix wildcard)
+# See docs/examples/politeness.yaml
+trawl batch mixed-urls.txt --politeness politeness.yaml
+```
+
+Example `politeness.yaml`:
+
+```yaml
+default:
+  rate: 1
+  concurrency: 4
+hosts:
+  - host: plato.stanford.edu
+    rate: 0.5        # SEP is academic, slow-crawl
+    concurrency: 2
+  - host: "*.gov"
+    rate: 0.5        # slow-crawl all government TLDs
+```
+
+First-match-wins top-to-bottom; `*.suffix` doesn't match the bare TLD.
+
 ---
 
 ## Output shape
@@ -307,9 +496,33 @@ Every record is one line of JSONL:
       "open_graph": { "title": "...", "image": "..." },
       "twitter": { "card": "summary_large_image" },
       "json_ld": [ { "@type": "Article", "headline": "..." } ]
-    }
+    },
+    "evasion": { "browser_like": true, "user_agent": "Mozilla/5.0 ...", "proxy": true },
+    "pdf": null
   },
   "failure_category": "success"
+}
+```
+
+**PDF records** look the same but with `content_type: "text/markdown"`
+(swapped after transform), `body` as markdown, and `metadata.pdf`
+populated:
+
+```json
+{
+  "metadata": {
+    "content_type": "text/markdown",
+    "pdf": {
+      "page_count": 15,
+      "title": "Attention Is All You Need",
+      "author": "Ashish Vaswani et al.",
+      "created_at": "2024-04-10T17:11:43-04:00",
+      "has_text_layer": true,
+      "used_ocr": false,
+      "extractor_tier": "pdftotext",
+      "pages": [ { "number": 1, "text": "..." }, { "number": 2, "text": "..." } ]
+    }
+  }
 }
 ```
 
@@ -326,9 +539,16 @@ Every record is one line of JSONL:
 - `http_5xx` -- 500-class HTTP error (server broken)
 - `dns_failure` -- DNS lookup failed (domain doesn't exist or unreachable)
 - `tls_error` -- certificate or handshake failed
+- `connection_refused` -- TCP connection actively rejected
 - `timeout` -- fetch timed out before completing
 - `spa_shell` -- HTTP tier returned a content-free SPA shell (Chromium should handle)
-- `robots_disallowed` -- blocked by robots.txt (unless `--ignore-robots`)
+- `robots_blocked` -- blocked by robots.txt (unless `--ignore-robots`)
+- `cloudflare_block` -- Cloudflare challenge/firewall rejection (status 1020 or cf-chl text)
+- `parked_domain` -- domain is parked (generally via WPEngine signature)
+- `all_tiers_exhausted` -- every tier was attempted, none succeeded
+- `extraction_failed` -- fetch worked, post-fetch parsing failed (CSS / schema / PDF)
+- `pdf_tooling_missing` -- PDF response fetched OK but `pdftotext` isn't installed; raw bytes preserved in `body`
+- `follow_failed` -- hybrid fallback couldn't resolve the fallback selector against the homepage
 
 **Per-job stats:** every batch/crawl job writes a `stats.json` to the job
 directory with reachable/unreachable counts, per-category failure breakdown,
