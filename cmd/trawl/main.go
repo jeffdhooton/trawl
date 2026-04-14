@@ -28,8 +28,17 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "trawl",
 		Short: "Intelligent tiered web scraping",
-		Long: `trawl routes each URL through the cheapest engine that returns valid content:
-HTTP → Chromium. Persistent frontier, polite by default, resumable.
+		Long: `████████╗██████╗  █████╗ ██╗    ██╗██╗
+╚══██╔══╝██╔══██╗██╔══██╗██║    ██║██║
+   ██║   ██████╔╝███████║██║ █╗ ██║██║
+   ██║   ██╔══██╗██╔══██║██║███╗██║██║
+   ██║   ██║  ██║██║  ██║╚███╔███╔╝███████╗
+   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝
+   intelligent tiered web scraping
+
+Routes each URL through the cheapest engine that returns valid content:
+HTTP → Chromium. PDFs extract via pdftotext (optional OCR for scans).
+Persistent frontier, polite by default, resumable.
 
 Use "trawl proxy-test" to validate proxy connectivity before a long run.`,
 		SilenceUsage: true,

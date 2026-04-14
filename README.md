@@ -1,13 +1,55 @@
 # trawl
 
-**Intelligent tiered web scraping.** A single Go binary that routes each
-URL through the cheapest engine that returns valid content, remembers
-which tier worked per host, persists the frontier so long crawls
-survive crashes, and produces clean markdown + structured extraction
-ready for downstream pipelines.
+```
+████████╗██████╗  █████╗ ██╗    ██╗██╗
+╚══██╔══╝██╔══██╗██╔══██╗██║    ██║██║
+   ██║   ██████╔╝███████║██║ █╗ ██║██║
+   ██║   ██╔══██╗██╔══██║██║███╗██║██║
+   ██║   ██║  ██║██║  ██║╚███╔███╔╝███████╗
+   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝
+   intelligent tiered web scraping
+```
 
-No API key. No runtime dependency. No Docker required. `go install` and
-you're done.
+**A local-first web scraping CLI.** Single static Go binary that routes each
+URL through the cheapest engine that returns valid content — HTTP on easy
+pages, headless Chromium on the SPAs that need it, `pdftotext` (+ optional
+OCR) on PDFs — then emits clean markdown, structured extraction, and
+per-page metadata as JSONL.
+
+No API key. No runtime daemon. No Docker. `curl | sh` and you're done.
+
+### Why trawl
+
+- **Tiered routing with learning.** Each URL finds the cheapest engine
+  that returns valid content; the router remembers per-host and reorders
+  the ladder on the next run.
+- **Single static binary, zero runtime deps.** `go install`, `curl | sh`,
+  or drop the binary on a `$5` VPS. No CGO anywhere in the tree.
+- **Persistent, resumable frontier.** SIGINT-safe BadgerDB-backed queue.
+  `trawl resume <job-id>` picks up where crashes left off.
+- **Polite by default.** robots.txt, per-domain rate limits, concurrency
+  caps. Opt-out, not opt-in. Per-host overrides via YAML.
+- **Content-type aware.** HTML → clean markdown (readability-stripped
+  if you want), PDF → markdown via `pdftotext` (+ Tier 3 OCR for scans),
+  schema extraction with fallback selectors and transforms.
+- **JSONL everything.** Composes with `jq`, `grep`, and the rest of Unix
+  without a custom parser.
+
+### vs Firecrawl
+
+trawl has feature parity with Firecrawl on the "clean content from a URL"
+use case: scrape, crawl, map, markdown output, schema extraction, caching,
+proxies, PDF + OCR.
+
+- **What Firecrawl has that trawl doesn't:** LLM extraction, search
+  integration, managed webhooks, hosted API.
+- **What trawl has that Firecrawl doesn't:** single static binary, no
+  API key, persistent resumable frontier, tiered routing with cross-job
+  learning, robots-polite-by-default, JSONL composability.
+
+If you want a managed service, use Firecrawl. If you want the tool running
+locally on your laptop or a `$5` VPS, piping clean output into whatever
+pipeline you already have, use trawl.
 
 ---
 
