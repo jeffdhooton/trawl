@@ -142,6 +142,17 @@ suitable for copying onto a $5 VPS.
   `brew install tesseract` (macOS) or `apt install tesseract-ocr`
   (Debian/Ubuntu). Required only when `--ocr` is passed.
 
+**Using [Claude Code](https://claude.com/claude-code)?** Drop the
+vendored skill into your user skills directory so Claude routes
+scrape-like requests to trawl automatically:
+
+```sh
+mkdir -p ~/.claude/skills/trawl
+cp claude-skill/SKILL.md ~/.claude/skills/trawl/SKILL.md
+```
+
+See [`claude-skill/README.md`](claude-skill/README.md) for details.
+
 ## What it does
 
 - **Tiered routing.** Each URL starts at HTTP (`net/http` + `goquery`);
