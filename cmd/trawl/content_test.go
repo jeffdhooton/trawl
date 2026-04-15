@@ -20,6 +20,10 @@ func newContentTestServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("User-agent: *\nAllow: /\n"))
 	})
+	mux.HandleFunc("/api.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		_, _ = w.Write([]byte(`{"kind":"Listing","data":{"after":"t3_abc","children":[{"title":"first post"},{"title":"second post"}]}}`))
+	})
 	mux.HandleFunc("/article", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(`<!doctype html>
@@ -294,6 +298,96 @@ func TestScrapeFormatJSONEmptyExtracted(t *testing.T) {
 	}
 	if rec.Body != "{}" {
 		t.Errorf("body = %q, want {} when no selectors configured", rec.Body)
+	}
+}
+
+// TestScrapeFormatJSONPassesThroughJSONBody: when the upstream response is
+// already JSON and no schema/selector was configured, --format json should
+// pass the body through rather than serializing an empty extracted map.
+// The original behavior ("{}") silently discarded JSON-API responses —
+// this is the fix documented in docs/REDDIT.md §6.0.
+func TestScrapeFormatJSONPassesThroughJSONBody(t *testing.T) {
+	srv := newContentTestServer(t)
+	trawlHome := withTrawlHome(t)
+	outputFile := filepath.Join(trawlHome, "out.jsonl")
+
+	opts := scrapeOpts{
+		outputPath: outputFile,
+		timeout:    5 * time.Second,
+		tiers:      "http",
+		format:     "json",
+	}
+	if err := runScrape(context.Background(), srv.URL+"/api.json", opts); err != nil {
+		t.Fatalf("runScrape: %v", err)
+	}
+
+	rec := readJSONL(t, outputFile)[0]
+	if rec.BodyFormat != "json" {
+		t.Errorf("body_format = %q, want json", rec.BodyFormat)
+	}
+	if !strings.Contains(rec.Body, `"kind":"Listing"`) {
+		t.Errorf("body should contain passed-through JSON response, got: %s", rec.Body)
+	}
+	if rec.Body == "{}" {
+		t.Error("body must not be the empty-extracted fallback on a JSON response")
+	}
+}
+
+// TestScrapeFormatMarkdownPassesThroughJSONBody: --format markdown on a
+// JSON response mangled brackets/underscores with backslash escapes
+// before the fix. Now it passes the body through, labeled as json.
+func TestScrapeFormatMarkdownPassesThroughJSONBody(t *testing.T) {
+	srv := newContentTestServer(t)
+	trawlHome := withTrawlHome(t)
+	outputFile := filepath.Join(trawlHome, "out.jsonl")
+
+	opts := scrapeOpts{
+		outputPath: outputFile,
+		timeout:    5 * time.Second,
+		tiers:      "http",
+		format:     "markdown",
+	}
+	if err := runScrape(context.Background(), srv.URL+"/api.json", opts); err != nil {
+		t.Fatalf("runScrape: %v", err)
+	}
+
+	rec := readJSONL(t, outputFile)[0]
+	if rec.BodyFormat != "json" {
+		t.Errorf("body_format = %q, want json (markdown on JSON passes through, relabeled)", rec.BodyFormat)
+	}
+	if !strings.Contains(rec.Body, `"after":"t3_abc"`) {
+		t.Errorf("body should contain unescaped JSON, got: %s", rec.Body)
+	}
+	if strings.Contains(rec.Body, `\_`) || strings.Contains(rec.Body, `\[`) {
+		t.Errorf("body must not contain markdown-escaped characters on a JSON response, got: %s", rec.Body)
+	}
+}
+
+// TestScrapeFormatJSONEmptyExtractedOnHTML: existing behavior preserved —
+// --format json on an HTML response with no schema still emits "{}".
+// Only JSON-content-type responses trigger the passthrough.
+func TestScrapeFormatJSONEmptyExtractedOnHTML(t *testing.T) {
+	// This is a regression guard for the fix above — confirms we didn't
+	// broaden passthrough to HTML bodies. TestScrapeFormatJSONEmptyExtracted
+	// already covers the happy path; this one asserts the content-type
+	// gating is tight.
+	srv := newContentTestServer(t)
+	trawlHome := withTrawlHome(t)
+	outputFile := filepath.Join(trawlHome, "out.jsonl")
+
+	opts := scrapeOpts{
+		outputPath: outputFile,
+		timeout:    5 * time.Second,
+		tiers:      "http",
+		format:     "json",
+	}
+	if err := runScrape(context.Background(), srv.URL+"/article", opts); err != nil {
+		t.Fatalf("runScrape: %v", err)
+	}
+
+	rec := readJSONL(t, outputFile)[0]
+	if rec.Body != "{}" {
+		t.Errorf("HTML response with --format json and no schema should emit {}, got: %s", rec.Body)
 	}
 }
 

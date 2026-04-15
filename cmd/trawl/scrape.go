@@ -490,6 +490,7 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 	// extracted text already is valid CommonMark.
 	if best != nil && copts.format != "" {
 		fromPDF := rec.Metadata.PDF != nil
+		fromJSON := isJSON(best.ContentType)
 		switch copts.format {
 		case "html":
 			if fromPDF {
@@ -513,6 +514,14 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 				rec.BodyFormat = "markdown"
 				break
 			}
+			if fromJSON {
+				// HTML-to-markdown on a JSON body mangles brackets and
+				// underscores with backslash escapes. Pass through,
+				// labeled as json so consumers can parse it directly.
+				rec.Body = string(contentBody)
+				rec.BodyFormat = "json"
+				break
+			}
 			md, err := extract.ToMarkdown(contentBody, rec.CanonicalURL)
 			if err != nil {
 				// Converter failure → log into Metadata but don't fail
@@ -525,10 +534,17 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 				rec.BodyFormat = "markdown"
 			}
 		case "json":
-			if rec.Extracted != nil {
+			switch {
+			case rec.Extracted != nil:
 				j, _ := json.Marshal(rec.Extracted)
 				rec.Body = string(j)
-			} else {
+			case fromJSON:
+				// The upstream response is already JSON and no schema
+				// was configured — pass the body through rather than
+				// emitting "{}" from an empty extracted map. This is
+				// the direct-to-API case (e.g. reddit.com/*.json).
+				rec.Body = string(contentBody)
+			default:
 				rec.Body = "{}"
 			}
 			rec.BodyFormat = "json"
@@ -604,6 +620,18 @@ func isHTML(contentType string) bool {
 func isPDF(contentType string) bool {
 	ct := strings.ToLower(contentType)
 	return strings.Contains(ct, "application/pdf") || strings.Contains(ct, "application/x-pdf")
+}
+
+// isJSON reports whether a Content-Type header indicates a JSON body.
+// When true, the body is already structured and we should not run
+// HTML-oriented transforms (markdown conversion, empty-extracted "{}"
+// fallback) on it — pass it through instead. Matches the common
+// variants: application/json, application/ld+json, and any +json
+// suffix (e.g. application/vnd.api+json).
+func isJSON(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.Contains(ct, "application/json") ||
+		strings.Contains(ct, "+json")
 }
 
 // pdfToolingHintOnce logs the "install poppler-utils" hint at most once

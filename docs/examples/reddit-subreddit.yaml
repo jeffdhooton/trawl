@@ -1,0 +1,95 @@
+# Reddit subreddit listing schema (old.reddit.com).
+#
+# Extracts posts from a subreddit index page — hot/new/top/controversial
+# or a user page. Works against:
+#   https://old.reddit.com/r/<subreddit>/
+#   https://old.reddit.com/r/<subreddit>/new/
+#   https://old.reddit.com/r/<subreddit>/top/?t=week
+#   https://old.reddit.com/user/<username>/submitted/
+#
+# Requires --ignore-robots because Reddit serves a "Blocked" page in
+# place of robots.txt. See docs/REDDIT.md for why this is safe for
+# polite use and how to stay polite without robots.txt guidance.
+#
+# Usage:
+#   trawl scrape https://old.reddit.com/r/golang/ \
+#     --schema docs/examples/reddit-subreddit.yaml \
+#     --format json \
+#     --ignore-robots --browser-like \
+#     -o golang.jsonl
+#
+# Pagination: old.reddit uses ?count=N&after=t3_<id>. The `next_page`
+# field captures the link; loop by feeding it back to a second scrape
+# call or a `trawl batch` job.
+#
+# Most per-post fields come from data-* attributes on the .thing
+# container, which is dramatically more robust than scraping nested
+# spans. Reddit has kept this attribute surface stable for a decade.
+
+version: 2
+fields:
+  subreddit:
+    selector: ".titlebox h1.redditname a"
+    transforms:
+      - type: lowercase
+
+  posts:
+    selector: ".sitetable .thing.link"
+    multiple: true
+    fields:
+      id:
+        selector: ""
+        attr: "data-fullname"
+      title:
+        selector: "a.title"
+      permalink:
+        selector: ""
+        attr: "data-permalink"
+      url:
+        # external link for link posts; permalink for self posts
+        selector: ""
+        attr: "data-url"
+      domain:
+        selector: ""
+        attr: "data-domain"
+      author:
+        selector: ""
+        attr: "data-author"
+      score:
+        selector: ""
+        attr: "data-score"
+      comments_count:
+        selector: ""
+        attr: "data-comments-count"
+      timestamp_ms:
+        selector: ""
+        attr: "data-timestamp"
+      timestamp_iso:
+        selector: ".tagline time"
+        attr: "datetime"
+      rank:
+        selector: ""
+        attr: "data-rank"
+      flair:
+        selector: ".linkflairlabel"
+        attr: "title"
+      nsfw:
+        selector: ""
+        attr: "data-nsfw"
+      spoiler:
+        selector: ""
+        attr: "data-spoiler"
+      promoted:
+        selector: ""
+        attr: "data-promoted"
+      stickied:
+        # .stickied-tagline exists only on stickied posts;
+        # its text ("announcement", etc.) is the sticky label.
+        # Empty when not stickied.
+        selector: ".stickied-tagline"
+
+  next_page:
+    selector:
+      - ".nextprev a[rel~=next]"
+      - ".next-button a"
+    attr: "href"

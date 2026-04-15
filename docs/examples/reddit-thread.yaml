@@ -1,0 +1,107 @@
+# Reddit thread + comments schema (old.reddit.com).
+#
+# Extracts a single thread's post + all comments on the page.
+# Works against:
+#   https://old.reddit.com/r/<sub>/comments/<id>/<slug>/
+#
+# Comments are flat on the page but their indentation depth can be
+# recovered from nested .thing containers — v2 schema doesn't yet
+# capture parent-child relationships, so consumers that need a
+# threaded reconstruction should post-process by matching
+# data-permalink prefixes or use the Reddit .json endpoint instead
+# (see docs/REDDIT.md §"Route B: .json API").
+#
+# Only the top-level view is fetched. Comment trees deeper than
+# Reddit's default expansion show "load more comments" links which
+# old.reddit renders as .morechildren; expanding those requires a
+# second request per fork. That's a crawl problem, not a schema
+# problem; see docs/REDDIT.md for the recipe.
+#
+# Usage:
+#   trawl scrape \
+#     "https://old.reddit.com/r/golang/comments/1skayg7/a_stateful_ui_runtime/" \
+#     --schema docs/examples/reddit-thread.yaml \
+#     --format json \
+#     --ignore-robots --browser-like \
+#     -o thread.jsonl
+
+version: 2
+fields:
+  post:
+    selector: ".sitetable.linklisting .thing.link"
+    fields:
+      id:
+        selector: ""
+        attr: "data-fullname"
+      title:
+        selector: "a.title"
+      author:
+        selector: ""
+        attr: "data-author"
+      score:
+        selector: ""
+        attr: "data-score"
+      permalink:
+        selector: ""
+        attr: "data-permalink"
+      url:
+        selector: ""
+        attr: "data-url"
+      domain:
+        selector: ""
+        attr: "data-domain"
+      flair:
+        selector: ".linkflairlabel"
+        attr: "title"
+      timestamp_ms:
+        selector: ""
+        attr: "data-timestamp"
+      comments_count:
+        selector: ""
+        attr: "data-comments-count"
+      selftext:
+        # populated only for self-posts; empty for link posts
+        selector: ".expando .usertext-body .md"
+
+  comments:
+    selector: ".commentarea .thing.comment"
+    multiple: true
+    fields:
+      id:
+        selector: ""
+        attr: "data-fullname"
+      author:
+        selector: ""
+        attr: "data-author"
+      permalink:
+        selector: ""
+        attr: "data-permalink"
+      replies_count:
+        selector: ""
+        attr: "data-replies"
+      score:
+        # not in data-*; .score.unvoted has real value in title attr
+        selector: ".entry .tagline .score.unvoted"
+        attr: "title"
+      timestamp_iso:
+        selector: ".entry .tagline time"
+        attr: "datetime"
+      body_markdown:
+        selector: ".entry .usertext-body .md"
+      edited:
+        selector: ".entry .tagline time.edited-timestamp"
+        attr: "datetime"
+      stickied:
+        selector: ".stickied-tagline"
+
+  more_comments_stubs:
+    # "load more comments (N replies)" placeholders — count these to
+    # know how many fork-expansions the full thread would need
+    selector: ".commentarea .morechildren a"
+    multiple: true
+    fields:
+      text:
+        selector: ""
+      onclick:
+        selector: ""
+        attr: "onclick"
