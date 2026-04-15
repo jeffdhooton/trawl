@@ -150,24 +150,25 @@ func (c *Chromium) allocator(parent context.Context) (context.Context, error) {
 	}
 
 	// Allocator outlives individual Fetch calls so the browser is reused.
-	// The 30s timeout prevents an indefinite hang if Chrome can't launch
-	// (missing binary, resource exhaustion, misconfigured sandbox).
-	launchCtx, launchCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	ctx, cancel := chromedp.NewExecAllocator(launchCtx, opts...)
+	// Parent must be context.Background() — NOT a timeout-scoped context —
+	// because chromedp derives the allocator's ctx from it, and cancelling
+	// that parent would kill the stored allocator.
+	ctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 
 	// Verify the browser actually starts by creating and immediately
-	// closing a throwaway context. This forces chromedp to spawn the
-	// process now (under the launch timeout) rather than deferring it
-	// to the first Fetch where a launch failure would be confusing.
+	// closing a throwaway context. The 30s probe timeout is scoped to the
+	// probe tab, not the allocator, so it can fire without poisoning the
+	// long-lived allocator context.
 	probeCtx, probeCancel := chromedp.NewContext(ctx)
-	if err := chromedp.Run(probeCtx); err != nil {
+	probeTimeout, probeTimeoutCancel := context.WithTimeout(probeCtx, 30*time.Second)
+	if err := chromedp.Run(probeTimeout); err != nil {
+		probeTimeoutCancel()
 		probeCancel()
 		cancel()
-		launchCancel()
 		return nil, fmt.Errorf("chromium launch failed (is Chrome installed?): %w", err)
 	}
+	probeTimeoutCancel()
 	probeCancel()
-	launchCancel()
 
 	c.allocCtx = ctx
 	c.allocCancel = cancel
