@@ -398,6 +398,97 @@ What was deferred from this PR:
   starts cross-checking against the UA platform (e.g. expecting
   AMD on a Linux box) we'll add a small lookup table. Not yet.
 
+#### SHIPPED 2026-04-16 — depth enhancement
+
+Live probe run against real-world walled sites after v0.8.1
+(soft-block detection) made it possible to *see* which walls
+chromium+stealth was still hitting. Headline finding: Cloudflare
+IUAM ("Just a moment") → defeated. DataDome and PerimeterX →
+still detecting trawl on the chromium path. The patches above
+cover the trivial tells (webdriver, plugins, WebGL strings) but
+modern canvas/audio fingerprinting and device-attribute checks
+are the load-bearing differentiators.
+
+Seven patches added (stealth.js grew ~110 → ~280 lines):
+
+1. **Canvas fingerprint noise** — `toDataURL`, `toBlob`, and
+   `getImageData` add imperceptible per-session noise (~0.1% of
+   pixel channels XORed in the LSB). A `WeakSet` tracks already-
+   perturbed canvases so the same canvas encoded twice in one
+   document yields identical hashes (real-browser determinism).
+   Per-document `docSeed = Math.random()` keeps the pattern
+   deterministic within a render but variable across sessions —
+   so a population of trawl runs looks diverse rather than
+   clustered on one hash. Mulberry32 PRNG for the distribution.
+2. **Audio fingerprint noise** — `AnalyserNode.getFloatFrequencyData`
+   / `getByteFrequencyData` and `AudioBuffer.getChannelData`
+   get the same treatment with sub-integer sinusoidal jitter.
+3. **Rich `window.chrome`** — `chrome.app` (with InstallState /
+   RunningState enums + `getDetails`/`getIsInstalled`/`runningState`
+   methods), `chrome.csi()`, `chrome.loadTimes()` returning
+   plausible shapes. Real Chrome still exposes these deprecated
+   APIs; their absence was a detection vector.
+4. **Expanded permissions.query shim** — beyond notifications:
+   geolocation, camera, microphone, clipboard-read, clipboard-
+   write, midi. All return `state: 'prompt'` (the pre-interaction
+   default). `Notification.permission` getter forced to
+   `'default'` so headless's `'denied'` default doesn't read.
+5. **`Navigator.prototype.webdriver` proto defense** — detectors
+   that walk the prototype to `Object.getOwnPropertyDescriptor(
+   Navigator.prototype, 'webdriver')` now see our getter
+   returning undefined rather than the native `true` on the proto.
+6. **`navigator.deviceMemory` / `navigator.hardwareConcurrency`** —
+   default to `8` if unset. Real browsers always expose these;
+   `undefined` was a headless tell.
+
+**NOT SHIPPED (deferred, JS-unreachable):**
+
+- **`window.outerWidth` / `outerHeight` realism.** Chromium exposes
+  these as unforgeable [Replaceable] accessors on the Window
+  instance; `Object.defineProperty(window, ...)` and
+  `window.__defineGetter__` are both silently rejected. A proper
+  fix requires CDP `Emulation.setDeviceMetricsOverride` from the
+  Go side. Deferred — not a JS-level concern.
+- **Font enumeration defense.** Measuring text widths against
+  known fonts is a real fingerprint surface, but the obvious
+  interventions (block `measureText`, alias fonts) risk breaking
+  legitimate page rendering. Revisit only if a consumer hits a
+  detector that specifically does font probing AND the current
+  patches don't cover it.
+- **`Error.prepareStackTrace` / CDP artifact scrubbing.** Headless
+  Chromium's stack traces leak through if a detector throws and
+  parses `err.stack`. Marginal payoff; skipped.
+- **MediaDevices.enumerateDevices, Battery API, full WebGL
+  extension catalog.** Low detector-usage in the wild; skipped.
+
+**Live validation matrix (2026-04-16, `--tiers chromium --stealth`):**
+
+| Site            | Wall vendor | v0.8.1 | v0.8.2 |
+|-----------------|-------------|--------|--------|
+| glassdoor.com   | CF IUAM     | ✅      | ✅      |
+| fiverr.com      | PerimeterX  | N/T    | ❌ (PX caught) |
+| g2.com          | DataDome    | ❌      | ❌ (DataDome caught) |
+| ticketmaster.com | none (from this IP) | ✅ | ✅ |
+
+HTTP tier with `--browser-like --tls-match chrome` continues to
+defeat fiverr (1.4 MB response, tier=http). The chromium+stealth
+path is actually **less** stealthy than HTTP-with-evasion for
+fingerprint-gated sites — chromium exposes CDP artifacts that the
+HTTP engine simply doesn't have. Depth enhancements narrow this
+gap but don't close it entirely. Soft-block detection from v0.8.1
+keeps working as the backstop: every wall we don't defeat shows
+up cleanly in `metadata.soft_block` with the vendor attributed.
+
+**Diagnostic guidance for future session:** when a walled site
+needs more work, first check which tier serves the wall
+(`metadata.soft_block.tiers`). If HTTP tier walls and chromium
+succeeds, the fix is more HTTP evasion (TLS variants, HTTP/2
+SETTINGS forging). If chromium walls, the fix is more JS stealth
+or CDP-level counter-measures. If BOTH tiers wall on the same
+vendor (e.g. DataDome), the target is past what a flagless tool
+can reasonably defeat — proxy rotation (Tier 4) is the next
+lever, not more stealth.
+
 ### 5.3 Tier 3 — Ship only on clear data that Tier 1+2 are insufficient
 
 Add `--tls-match chrome|safari|firefox` flag. Replaces the HTTP

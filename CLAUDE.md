@@ -14,6 +14,23 @@ default, single static binary.
 
 ## Status (as of 2026-04-16)
 
+**Shipped (v0.8.2):** Chromium stealth depth enhancement.
+`internal/engine/stealth.js` grew from ~110 → ~280 lines with
+canvas fingerprint noise (per-session XOR jitter on ~0.1% of pixel
+LSBs, WeakSet-idempotent per canvas, Mulberry32 PRNG),
+AnalyserNode / AudioBuffer noise, rich `window.chrome`
+(`.app`/`.csi`/`.loadTimes`), expanded `Permissions.query` beyond
+notifications, `Notification.permission` → `'default'` override,
+`Navigator.prototype.webdriver` proto defense, and
+`navigator.deviceMemory`/`hardwareConcurrency` defaults. Live
+validation: defeats Cloudflare IUAM (glassdoor.com), does NOT
+defeat DataDome (g2.com) or PerimeterX (fiverr.com) on chromium
+path — both cleanly caught via v0.8.1's soft-block telemetry.
+Not shipped: `outerWidth`/`outerHeight` spoof (Chromium makes this
+JS-unforgeable; real fix is CDP Emulation from Go side). Decision
+log: `docs/DECISIONS.md` (2026-04-16 top entry). EVASION.md §5.2
+gets a "SHIPPED 2026-04-16 depth enhancement" subsection.
+
 **Shipped (v0.8.1):** Soft-block detection. `internal/validity`
 scans small (≤50 KB) `text/html` bodies for anti-bot challenge
 markers (Cloudflare "Just a moment"/Turnstile/`cf-chl`, Akamai

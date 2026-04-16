@@ -6,6 +6,114 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-16 — chromium stealth depth: canvas/audio fingerprint noise + rich platform shims
+
+**Decision:** Extend the in-tree stealth init script from the v0.5.0-
+era 7-patch set (webdriver, plugins, languages, `window.chrome`
+stub, Permissions shim, WebGL strings, iframe chrome re-attach) to
+a ~13-patch set that also covers canvas fingerprint noise, audio
+fingerprint noise, rich `window.chrome` (`.app`/`.csi`/`.loadTimes`),
+expanded `Permissions.query` beyond notifications, `Notification.permission`
+default-state spoof, `Navigator.prototype.webdriver` defense, and
+`deviceMemory`/`hardwareConcurrency` defaults. Keep it in-tree
+(reject the vendor-puppeteer-extra-plugin-stealth option from
+EVASION.md §9 item 4). Skip `window.outerWidth`/`outerHeight`
+realism — Chromium makes those JS-unreachable and the real fix is
+CDP `Emulation.setDeviceMetricsOverride`, deferred.
+
+**Context:** After v0.8.1 shipped soft-block detection, a live probe
+against real walled sites (g2, glassdoor, fiverr, ticketmaster)
+showed exactly which walls chromium+stealth was beating and which
+were catching trawl. Headline:
+- Cloudflare IUAM → defeated.
+- DataDome and PerimeterX → still detecting trawl on the chromium
+  path, with clear soft-block vendor attribution.
+
+The gap wasn't on the "trivial tells" (webdriver, plugins) the old
+patches covered. It was on canvas/audio fingerprinting and device-
+attribute profiling, which modern anti-bot stacks weight heavily.
+Shipping the observability in v0.8.1 made it cheap to know which
+patches were worth adding.
+
+**Why in-tree over vendoring puppeteer-extra-plugin-stealth:**
+
+- **Package-manager cost.** puppeteer-extra-plugin-stealth is a Node
+  package with its own transitive deps. Trawl ships as a single
+  static Go binary; introducing a `node_modules` or a JS
+  build-step just to grab one file per patch would break the
+  deploy story.
+- **Drift risk.** The upstream lib changes frequently in response
+  to detector arms-race moves, but not always in ways that benefit
+  our narrow use case. A vendored copy means we track their
+  churn; an in-tree rewrite means we track detector reality.
+- **Audit surface.** Our ~280-line file is readable by a single
+  human in one sitting. Every patch has a labeled block with
+  what-it-defends-against commentary. A vendored multi-file lib
+  with its own patch taxonomy is strictly worse to reason about.
+- **Scope match.** We don't need Sannysoft/CreepJS parity; we need
+  to handle the five or six detectors that actually ship in
+  production (CF, DataDome, PerimeterX/HUMAN, Imperva, Akamai).
+  Cherry-picking from the upstream is a bigger maintenance burden
+  than a fresh 280-line file covering our threat model directly.
+
+**Technical notes that mattered:**
+
+- **Canvas noise needs a per-canvas `WeakSet`.** The naive approach
+  (perturb on every `toDataURL` call) is non-idempotent:
+  `ctx.getImageData → XOR-perturb → putImageData` flips the SAME
+  LSBs on the second call, cancelling the first. WeakSet tracks
+  "already perturbed this canvas" so two `toDataURL` calls on one
+  canvas return identical hashes (real-browser behavior).
+  Discovered this the hard way during test writing.
+- **`toDataURL` must NOT route through the patched `getImageData`.**
+  The patched `getImageData` adds its own LSB noise. If
+  `toDataURL`'s internal read-back goes through the patched
+  version, and then we perturb again, XOR cancels. Fix: capture
+  originals (`origGetImageData`, `origPutImageData`,
+  `origToDataURL`) before patching anything, and route
+  `toDataURL`'s internal reads through the originals.
+- **`window.outerWidth` is JS-unforgeable in Chromium.** Neither
+  `Object.defineProperty(window, 'outerWidth', …)` nor
+  `window.__defineGetter__('outerWidth', …)` works — Chromium's
+  binding layer silently rejects both. Real fix is CDP
+  Emulation from the Go side; deferred.
+- **Per-document seed must NOT be exposed as a global.** An earlier
+  draft set `window.__trawlDocSeed = docSeed` for test diagnostic.
+  That's itself a detection signal — a real Chrome has no such
+  global. Removed; test now compares canvas PNG bytes directly.
+
+**What would change our minds (add more patches):**
+
+- A consumer reports a specific walled site that soft-block
+  telemetry attributes to a new vendor we don't currently cover.
+- Detection on a site we DO cover moves to a signal we don't patch
+  (e.g. font enumeration via `measureText`).
+- DataDome or PerimeterX release a detection update we can
+  reverse-engineer from their client-side script.
+
+**What would change our minds (remove a patch):**
+
+- False-positive reports: a legitimate site breaks because our
+  canvas/audio noise drifts rendering or audio playback enough
+  to be noticed. Noise levels are tuned conservatively (0.1%
+  pixels, sub-integer audio samples) but revisit if reports land.
+- A vendor stops checking a specific signal (e.g. deprecates a
+  `window.chrome.csi` check); removing the shim cuts code surface.
+
+**Live results:**
+
+| Site | Vendor | `--tiers chromium --stealth` v0.8.2 | Notes |
+|---|---|---|---|
+| glassdoor.com | CF IUAM | ✅ bypass | 344 KB content |
+| fiverr.com | PerimeterX | ❌ caught | Still wallable on chromium; HTTP+full evasion still bypasses |
+| g2.com | DataDome | ❌ caught | DataDome checks beyond our patches |
+| ticketmaster.com | none | ✅ passthrough | No wall from our IP |
+
+Soft-block metadata cleanly attributed every failure to the right
+vendor — v0.8.1's telemetry continues to earn its keep.
+
+---
+
 ## 2026-04-16 — soft-block detection as an escalation signal, aggregated across tiers
 
 **Decision:** A 200 OK response whose body matches an anti-bot challenge

@@ -1,11 +1,13 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.8.1 shipped 2026-04-16**. Soft-block detection. `internal/validity` now scans small (≤50 KB) `text/html` bodies for anti-bot challenge markers (Cloudflare "Just a moment"/Turnstile/`cf-chl`, Akamai, DataDome, Incapsula, PerimeterX, top-level recaptcha/hcaptcha, generic "Access denied") and returns `Escalate: true` so the router tries the next tier instead of silently recording a wall as success. Per-tier `{vendor, marker}` detections propagate through `router.Attempt.SoftBlock` and aggregate into `metadata.soft_block` on every record — populated even when a later tier succeeded (forensic signal). `failure.CatSoftBlock` fires when every tier walled. EVASION.md §9.6 SHIPPED. Decision log: `docs/DECISIONS.md` (2026-04-16, newest entry). Previously in v0.8.0: MCP server (`trawl mcp`) — see `docs/MCP.md` and the earlier DECISIONS.md entry.
+**Current phase:** Open — **v0.8.2 shipped 2026-04-16**. Chromium stealth depth enhancement. `internal/engine/stealth.js` grew from ~110 → ~280 lines adding canvas fingerprint noise (`toDataURL`/`toBlob`/`getImageData` with per-session XOR jitter, WeakSet-idempotent within document), audio fingerprint noise (`AnalyserNode`, `AudioBuffer.getChannelData`), rich `window.chrome` (`.app`/`.csi`/`.loadTimes` shims matching real Chrome's deprecated surface), expanded `Permissions.query` beyond notifications, `Notification.permission` → 'default' override, `Navigator.prototype.webdriver` proto-level defense, and `navigator.deviceMemory`/`hardwareConcurrency` defaults when missing. Live-verified against real CF/DataDome/PerimeterX walls: Cloudflare IUAM now defeats (glassdoor.com confirmed); DataDome and PerimeterX still catch trawl's chromium path (fingerprint surface beyond what JS-level patches can cover), but v0.8.1's soft-block telemetry cleanly attributes each failure to the right vendor. EVASION.md §5.2 gets a SHIPPED 2026-04-16 depth-enhancement subsection; DECISIONS.md new top entry explains the in-tree-over-vendor call and the technical gotchas (WeakSet idempotency, `outerWidth` JS-unforgeability). Previously in v0.8.1: soft-block detection; v0.8.0: MCP server.
+**Last updated:** 2026-04-16 `internal/validity` now scans small (≤50 KB) `text/html` bodies for anti-bot challenge markers (Cloudflare "Just a moment"/Turnstile/`cf-chl`, Akamai, DataDome, Incapsula, PerimeterX, top-level recaptcha/hcaptcha, generic "Access denied") and returns `Escalate: true` so the router tries the next tier instead of silently recording a wall as success. Per-tier `{vendor, marker}` detections propagate through `router.Attempt.SoftBlock` and aggregate into `metadata.soft_block` on every record — populated even when a later tier succeeded (forensic signal). `failure.CatSoftBlock` fires when every tier walled. EVASION.md §9.6 SHIPPED. Decision log: `docs/DECISIONS.md` (2026-04-16, newest entry). Previously in v0.8.0: MCP server (`trawl mcp`) — see `docs/MCP.md` and the earlier DECISIONS.md entry.
 **Last updated:** 2026-04-16
 
 This doc is the single source of truth for "what's next and why." The
 decision log in `docs/DECISIONS.md` captures one-off architectural
 calls; this file captures direction across phases. CLAUDE.md points
+
 here instead of maintaining its own priority list.
 
 ---
@@ -553,6 +555,103 @@ target returns a block code, and a pre-run validation subcommand.
   validity checker's `Escalate=false` for rotate-worthy codes
   when all retries are spent. This is the one place the rotation
   logic intentionally overrides validity semantics.
+
+### Phase: Chromium stealth depth — SHIPPED 2026-04-16
+
+**Why this phase:** v0.8.1 shipped soft-block detection as an
+observability layer; the first live probe against real walled sites
+(g2, glassdoor, fiverr) immediately told us which walls chromium
++stealth was still hitting. Cloudflare IUAM = beaten; DataDome +
+PerimeterX = still catching trawl on the chromium path. The gap
+wasn't on the trivial fingerprint tells (webdriver, plugin list)
+the v0.5.0 stealth patches covered — it was on canvas/audio
+fingerprinting and device-attribute profiling, which modern
+anti-bot stacks weight heavily. Cheap to ship now that the
+telemetry tells us where to aim.
+
+**What landed:**
+
+1. **Canvas fingerprint noise.** `HTMLCanvasElement.prototype.toDataURL`,
+   `toBlob`, and `CanvasRenderingContext2D.prototype.getImageData`
+   all perturb ~0.1% of pixel LSBs with a Mulberry32 PRNG seeded
+   from a per-document `docSeed = Math.random()`. A `WeakSet`
+   tracks already-perturbed canvases so the same canvas encoded
+   twice in one document yields identical hashes (real-browser
+   determinism preserved). Different sessions = different seeds
+   = different PNG bytes — verified by
+   `TestChromiumCanvasNoiseVariesAcrossSessions`.
+
+2. **Audio fingerprint noise.** `AnalyserNode.getFloatFrequencyData` /
+   `getByteFrequencyData` and `AudioBuffer.getChannelData` get
+   sub-integer sinusoidal jitter on a sparse subset of samples.
+   Same docSeed-scaled shift means within-session determinism.
+
+3. **Rich `window.chrome` surface.** `chrome.app` (with
+   InstallState + RunningState enum-ish objects and
+   `getDetails`/`getIsInstalled`/`runningState` methods),
+   `chrome.csi()`, and `chrome.loadTimes()` now return plausible
+   shapes. Real Chrome still exposes these deprecated APIs; their
+   absence was a detection vector.
+
+4. **Expanded `Permissions.query` shim.** Notifications was the
+   only name covered pre-v0.8.2. Now geolocation, camera,
+   microphone, clipboard-read, clipboard-write, midi all return
+   `state: 'prompt'` (the pre-interaction default a real browser
+   shows). `Notification.permission` getter forced to `'default'`
+   so headless's `'denied'` default reads as `'default'`.
+
+5. **`Navigator.prototype.webdriver` proto defense.** Detectors
+   that walk the prototype chain to
+   `Object.getOwnPropertyDescriptor(Navigator.prototype,
+   'webdriver')` now see our getter returning `undefined` rather
+   than the native `true` on the proto.
+
+6. **`navigator.deviceMemory` / `navigator.hardwareConcurrency`.**
+   Default to `8` if the native value is missing. Real browsers
+   always expose these; `undefined` was a headless tell. Existing
+   values are respected — we don't override when Chrome already
+   reports something realistic.
+
+**Not shipped (explicit deferrals with reasons):**
+
+- **`window.outerWidth` / `outerHeight` realism.** Chromium exposes
+  these as unforgeable `[Replaceable]` accessors; both
+  `Object.defineProperty(window, ...)` and `window.__defineGetter__`
+  are silently rejected by the binding layer. A proper fix requires
+  CDP `Emulation.setDeviceMetricsOverride` from the Go side. Out of
+  scope for a JS-only stealth script.
+- **Font enumeration defense.** `measureText`-based fingerprinting
+  is a real surface but the interventions risk breaking legitimate
+  page rendering.
+- **CDP artifact scrubbing / `Error.prepareStackTrace`.** Marginal
+  detector usage for high implementation cost.
+- **MediaDevices, Battery, full WebGL extension catalog.** Low
+  detector usage in the wild.
+
+**Live validation (`--tiers chromium --stealth`):**
+
+| Site | Wall vendor | Result |
+|---|---|---|
+| glassdoor.com | Cloudflare IUAM | ✅ 344 KB real content |
+| fiverr.com | PerimeterX | ❌ PX detection — soft-block metadata attributes |
+| g2.com | DataDome | ❌ DataDome detection — soft-block metadata attributes |
+| ticketmaster.com | none | ✅ passthrough |
+
+HTTP tier with `--browser-like --tls-match chrome` continues to
+defeat fiverr (1.4 MB content, no regression from v0.8.1). On
+fingerprint-gated sites the HTTP tier is actually **more stealthy**
+than chromium — chromium exposes CDP artifacts the HTTP engine
+simply doesn't have. v0.8.2 narrows this gap; it doesn't close it.
+Soft-block telemetry from v0.8.1 remains the backstop — every
+wall we don't defeat shows up cleanly in `metadata.soft_block`.
+
+**Why in-tree rather than vendor puppeteer-extra-plugin-stealth:**
+
+Single-file, ~280 lines, auditable in one sitting. Vendoring a
+Node lib would break the single-static-binary deploy story and
+force us to track upstream churn that doesn't always serve our
+narrow threat model. Full reasoning in DECISIONS.md (newest
+entry, 2026-04-16).
 
 ### Phase: Soft-block detection — SHIPPED 2026-04-16
 
