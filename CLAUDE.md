@@ -14,6 +14,20 @@ default, single static binary.
 
 ## Status (as of 2026-04-16)
 
+**Shipped (v0.8.1):** Soft-block detection. `internal/validity`
+scans small (≤50 KB) `text/html` bodies for anti-bot challenge
+markers (Cloudflare "Just a moment"/Turnstile/`cf-chl`, Akamai
+"Pardon Our Interruption", DataDome, Incapsula, PerimeterX,
+top-level recaptcha/hcaptcha, generic "Access denied") and
+returns `Escalate: true` so the router tries the next tier —
+previously these 200 OK challenge walls were silently recorded
+as successes. Per-tier `{vendor, marker}` detections propagate
+through `router.Attempt.SoftBlock` and aggregate into
+`metadata.soft_block` on every record, populated **even when a
+later tier succeeded** (forensic signal). `failure.CatSoftBlock`
+fires when every tier walled. EVASION.md §9.6 SHIPPED. Decision
+log: `docs/DECISIONS.md` (2026-04-16, newest entry).
+
 **Shipped (v0.8.0):** MCP server. `trawl mcp` exposes scrape/batch/
 crawl/map/sitemap as Model Context Protocol tools over stdio. Built
 on the official `modelcontextprotocol/go-sdk` v1.5.0 (pure Go, no

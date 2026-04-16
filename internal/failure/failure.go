@@ -38,6 +38,13 @@ const (
 	CatFollowFailed     Category = "follow_failed"
 	CatTiersExhausted   Category = "all_tiers_exhausted"
 	CatSPAShell         Category = "spa_shell"
+	// CatSoftBlock is set when every tier returned a 200 OK whose body
+	// matched an anti-bot challenge marker (Cloudflare "Just a moment",
+	// Akamai challenge, DataDome captcha, etc.). Distinct from
+	// CatCloudflareBlock, which is reserved for the error-string / status
+	// 1020 path. Soft-block classification is driven by internal/validity's
+	// body-scan detector — see the 2026-04-16 DECISIONS.md entry.
+	CatSoftBlock        Category = "soft_block"
 	// CatPDFToolingMissing is set when trawl fetched a PDF successfully
 	// but the local environment lacks the binaries needed to extract
 	// text (pdftotext for Tier 1/2, or pdftoppm+tesseract for --ocr).
@@ -95,6 +102,8 @@ func Classify(err error, statusCode int, errReason string) Category {
 		return CatRobotsBlocked
 	case strings.Contains(msg, "spa shell"):
 		return CatSPAShell
+	case strings.Contains(msg, "soft block"):
+		return CatSoftBlock
 	case strings.Contains(msg, "follow:"):
 		return CatFollowFailed
 	}
@@ -189,6 +198,7 @@ func AllCategories() []Category {
 		CatFollowFailed,
 		CatTiersExhausted,
 		CatSPAShell,
+		CatSoftBlock,
 		CatPDFToolingMissing,
 		CatOther,
 	}

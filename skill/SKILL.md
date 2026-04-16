@@ -328,6 +328,7 @@ Every record is one line of JSONL:
 - `tls_error` -- certificate or handshake failed
 - `timeout` -- fetch timed out before completing
 - `spa_shell` -- HTTP tier returned a content-free SPA shell (Chromium should handle)
+- `soft_block` -- body was an anti-bot challenge wall (CF "Just a moment", Akamai, DataDome, etc.). Per-tier detections also surface under `metadata.soft_block` even on successful routes.
 - `robots_disallowed` -- blocked by robots.txt (unless `--ignore-robots`)
 
 **Per-job stats:** every batch/crawl job writes a `stats.json` to the job

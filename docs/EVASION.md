@@ -747,6 +747,23 @@ implementation starts from a list of real questions.
    need signals like "body contains 'challenge'" or "content-type
    is text/html but body is <5KB and contains CAPTCHA markers."
 
+   **SHIPPED 2026-04-16.** `internal/validity` now scans small
+   (≤50 KB) `text/html` bodies for anti-bot challenge markers
+   (Cloudflare `cf-chl`/Turnstile/"Just a moment", Akamai
+   "Pardon Our Interruption", DataDome, Incapsula, PerimeterX,
+   top-level recaptcha/hcaptcha, generic "Access denied" walls)
+   and returns `Valid: false, Escalate: true` with a structured
+   `SoftBlock` detection attached. The router propagates every
+   per-tier detection through `Attempt.SoftBlock`, and
+   `internal/job` aggregates them into `metadata.soft_block` on
+   the output record — preserved even when a later tier succeeds,
+   so post-hoc analysis can see "this host walled on HTTP but
+   chromium got through." `internal/failure` gains a
+   `CatSoftBlock` category that fires when every tier walled.
+   Marker list is in `internal/validity/validity.go#softBlockMarkers`;
+   extend conservatively (each marker is a substring match, so
+   over-broad additions will false-positive on legitimate content).
+
 ---
 
 ## 10. Review cadence

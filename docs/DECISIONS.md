@@ -6,6 +6,73 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-16 — soft-block detection as an escalation signal, aggregated across tiers
+
+**Decision:** A 200 OK response whose body matches an anti-bot challenge
+marker (Cloudflare "Just a moment", Akamai "Pardon Our Interruption",
+DataDome captcha, Incapsula, PerimeterX, top-level recaptcha/hcaptcha,
+generic "Access denied" walls) is classified as `Valid: false,
+Escalate: true` inside `internal/validity`. The router tries the next
+tier, exactly as it does for an SPA shell or a 5xx. A per-tier
+structured detection (`{Vendor, Marker}`) travels through
+`router.Attempt.SoftBlock` and is aggregated into `metadata.soft_block`
+on every output record — populated **even when a later tier
+succeeded**, so a consumer can see "this host walled HTTP but chromium
+got through" without re-deriving it from the router outcome.
+`failure.CatSoftBlock` is the final classification when every tier
+walled.
+
+**Context:** Trawl's validity heuristic handled SPA stubs (empty
+`<div id="root">`) but treated a Cloudflare "Just a moment" page as
+success — the status code was 200 and the body was >512 B. That's the
+worst possible failure mode: it silently records a challenge wall as
+content and signals nothing downstream. Before shipping more evasion
+tiers, trawl needs a *better signal* — the observability to know a
+wall was hit, separate from the decision to fight through it.
+
+This is EVASION.md §9 item 6 — the only item from the original open
+questions that was about *signal*, not *technique*. Every other open
+item was an arms-race step (more TLS presets, SETTINGS forging,
+stealth script depth). This one is polite-first in shape: it doesn't
+change what trawl sends, only what it notices.
+
+**Why aggregate across tiers, not just "final outcome":** When tier 1
+walls and tier 2 succeeds, the record is a success — but the host's
+behavior ("walls non-browser traffic") is durable information that
+will inform the next fetch from the same host. Surfacing it as forensic
+metadata costs nothing (a few bytes of JSON) and lets downstream
+analysis pin chromium on known-walling hosts, feed a future
+rotate-on-soft-block trigger, or prioritize which sites are worth
+investing Tier 3 TLS forgery on. Dropping the signal the moment a
+later tier saved us would throw that away.
+
+**Marker list conservatism:** Each marker is a case-insensitive
+substring match over the body. Over-broad markers (e.g. just
+`"cloudflare"`) would false-positive on any page that mentions the
+vendor in article text. The shipped list is vendor-specific tokens
+that only appear inside real challenge HTML (`cf-chl`, `cf-turnstile`,
+`_Incapsula_Resource`, `px-captcha`, etc.) and a short list of generic
+block strings gated by a 50 KB body-size cap — real challenge pages
+are small; a 100 KB article mentioning "access denied" in prose is
+almost certainly not a wall.
+
+**What would change our minds:** If soft-block telemetry shows a
+vendor consistently under-detected (e.g. Akamai variants missing from
+hosts that are clearly walling), extend the marker list. If false
+positives surface on legitimate content, tighten a marker or add a
+negative filter. The list lives in
+`internal/validity/validity.go#softBlockMarkers` and is deliberately
+data-driven — not a taxonomy to defend.
+
+**Not shipped:** CLI flag to disable (`DetectSoftBlock` is a Config
+bool only; no callers toggle it today); soft-block as a trigger for
+`--rotate-on-status`-style proxy rotation (adding it is one lookup in
+`router.fetchWithProxyRotation`, hold for a consumer ask). Per-page
+stats aggregation in `internal/stats` already handles soft-block
+automatically via `failure.CatSoftBlock` being in `AllCategories()`.
+
+---
+
 ## 2026-04-16 — MCP server, official `modelcontextprotocol/go-sdk`, stdio only
 
 **Decision:** Ship `trawl mcp` — a Model Context Protocol server over

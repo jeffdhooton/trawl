@@ -580,3 +580,42 @@ func TestRouteNoRotatorConfigured(t *testing.T) {
 		t.Errorf("http calls = %d, want 1", httpE.calls)
 	}
 }
+
+// softBlockBody returns a minimal HTML body that trips the Cloudflare
+// "Just a moment" marker in internal/validity. Matches a real CF
+// challenge shape closely enough to exercise the detection + router
+// escalation path end-to-end without pulling in chromedp.
+func softBlockBody() []byte {
+	return []byte(`<html><head><title>Just a moment...</title></head><body>` +
+		`<div id="cf-chl-widget-abcdef"></div>` +
+		`<!--` + string(make([]byte, 600)) + `--></body></html>`)
+}
+
+func TestRouteEscalatesOnSoftBlock(t *testing.T) {
+	httpE := &fakeEngine{name: "http", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: softBlockBody(),
+	}}
+	chromiumE := &fakeEngine{name: "chromium", result: &engine.Result{
+		StatusCode: 200, ContentType: "text/html", Body: validHTML(),
+	}}
+
+	r, _ := New([]engine.Engine{httpE, chromiumE}, validity.NewChecker(validity.Default()))
+	out, err := r.Route(context.Background(), engine.Request{URL: "https://walled.example.com/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Tier != "chromium" {
+		t.Errorf("tier = %q, want chromium (http walled, chromium should succeed)", out.Tier)
+	}
+	if len(out.Attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(out.Attempts))
+	}
+	if out.Attempts[0].SoftBlock == nil {
+		t.Errorf("http attempt.SoftBlock should be set")
+	} else if out.Attempts[0].SoftBlock.Vendor != "cloudflare" {
+		t.Errorf("http attempt vendor = %q, want cloudflare", out.Attempts[0].SoftBlock.Vendor)
+	}
+	if out.Attempts[1].SoftBlock != nil {
+		t.Errorf("chromium attempt.SoftBlock should be nil (succeeded), got %+v", out.Attempts[1].SoftBlock)
+	}
+}

@@ -77,6 +77,18 @@ func TestClassifyRealWorld(t *testing.T) {
 			want:       CatSPAShell,
 		},
 		{
+			name:       "soft block from all tiers exhausted",
+			errStr:     `all tiers exhausted: [http:soft block: cloudflare/just a moment chromium:soft block: cloudflare/cf-chl]`,
+			statusCode: 200,
+			want:       CatSoftBlock,
+		},
+		{
+			name:       "soft block non-escalatable (single tier)",
+			errStr:     `http: soft block: datadome/datadome`,
+			statusCode: 200,
+			want:       CatSoftBlock,
+		},
+		{
 			name:       "context deadline during fetch",
 			errStr:     `Get "https://slow.example.com/": context deadline exceeded`,
 			statusCode: 0,
@@ -117,7 +129,7 @@ func TestIsReachable(t *testing.T) {
 		CatDNS, CatConnectionRefused, CatTLS, CatTimeout,
 		CatHTTP4xx, CatHTTP5xx, CatRobotsBlocked,
 		CatCloudflareBlock, CatParked, CatTiersExhausted, CatOther,
-		CatSPAShell,
+		CatSPAShell, CatSoftBlock,
 	}
 
 	for _, c := range reachable {

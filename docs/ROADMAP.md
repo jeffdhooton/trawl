@@ -1,6 +1,6 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.8.0 shipped 2026-04-16**. MCP server: `trawl mcp` exposes scrape/batch/crawl/map/sitemap as Model Context Protocol tools over stdio. Built on the official `modelcontextprotocol/go-sdk`. Required extracting cmd/trawl's orchestration into a new `internal/job` package — CLI commands shrank to flag-binding + cobra wiring. Hard caps (50/500/5000) on batch/crawl/map per call; over-cap errors point agents at the CLI. Design doc: `docs/MCP.md`. Decision log: `docs/DECISIONS.md` (2026-04-16 entry).
+**Current phase:** Open — **v0.8.1 shipped 2026-04-16**. Soft-block detection. `internal/validity` now scans small (≤50 KB) `text/html` bodies for anti-bot challenge markers (Cloudflare "Just a moment"/Turnstile/`cf-chl`, Akamai, DataDome, Incapsula, PerimeterX, top-level recaptcha/hcaptcha, generic "Access denied") and returns `Escalate: true` so the router tries the next tier instead of silently recording a wall as success. Per-tier `{vendor, marker}` detections propagate through `router.Attempt.SoftBlock` and aggregate into `metadata.soft_block` on every record — populated even when a later tier succeeded (forensic signal). `failure.CatSoftBlock` fires when every tier walled. EVASION.md §9.6 SHIPPED. Decision log: `docs/DECISIONS.md` (2026-04-16, newest entry). Previously in v0.8.0: MCP server (`trawl mcp`) — see `docs/MCP.md` and the earlier DECISIONS.md entry.
 **Last updated:** 2026-04-16
 
 This doc is the single source of truth for "what's next and why." The
@@ -553,6 +553,84 @@ target returns a block code, and a pre-run validation subcommand.
   validity checker's `Escalate=false` for rotate-worthy codes
   when all retries are spent. This is the one place the rotation
   logic intentionally overrides validity semantics.
+
+### Phase: Soft-block detection — SHIPPED 2026-04-16
+
+**Why this phase:** trawl's validity heuristic handled SPA stubs and
+HTTP 5xx but treated a 200 OK Cloudflare "Just a moment" page — or
+any anti-bot challenge wall with a 200 status — as success. That
+silently recorded challenge HTML as scraped content and gave
+zero observability that a wall was even hit. Before investing more
+arms-race evasion (Tier 3 SETTINGS forging, deeper stealth), trawl
+needed a *better signal* — the ability to notice a wall was hit,
+distinct from the decision to fight through it. This is EVASION.md
+§9.6, the only open-question item that was about signal rather than
+technique; the shape is polite-first (doesn't change what trawl
+sends, only what it notices).
+
+**What landed:**
+
+1. **`internal/validity` marker scan.** Small (≤50 KB) `text/html`
+   bodies are scanned for vendor-specific challenge markers:
+   Cloudflare (`cf-chl`, `cf-browser-verification`, `cf-turnstile`,
+   `Just a moment`, `Checking your browser`, `challenges.cloudflare.com`),
+   Akamai (`akam_blocked`, `Pardon Our Interruption`, block-page
+   reference prefix), DataDome (`datadome`, `dd-captcha`), Incapsula
+   (`_Incapsula_Resource`, `incap_ses`), PerimeterX (`px-captcha`,
+   `_pxAction`, `_pxhd`), top-level recaptcha/hcaptcha script tags,
+   and a short list of generic block-page strings
+   (`Attention Required`, `You have been blocked`, `Access denied`,
+   `Request unsuccessful`). On match, `Check` returns
+   `Valid: false, Escalate: true, SoftBlock: &{Vendor, Marker}`.
+   The router escalates to the next tier exactly as it does for an
+   SPA shell.
+
+2. **`internal/failure` new category.** `CatSoftBlock = "soft_block"`
+   is the final classification when every tier walled. Pattern-
+   matches the `"soft block"` prefix in error reason strings coming
+   from the router.
+
+3. **Per-tier propagation.** `router.Attempt.SoftBlock` carries the
+   validity checker's structured detection. The detection survives
+   even when a later tier succeeds — a post-hoc observer can see
+   "tier 1 got walled but tier 2 saved us" without re-parsing the
+   router outcome.
+
+4. **Record metadata.** `output.Metadata.SoftBlock` is a new
+   `*SoftBlockInfo` pointer, omitempty. Populated whenever any tier
+   detected a soft-block, regardless of final route success.
+   Fields: `Detected bool`, `Vendor string`, `Marker string`,
+   `Tiers []string`. Consumers filter on `metadata.soft_block != nil`
+   for forensic analysis; the top-level Vendor/Marker come from the
+   first hit (marker list is ordered most-specific → most-generic so
+   a CF challenge is never misclassified as "generic" just because
+   the page also contains an "Access denied" string).
+
+5. **Body-size gating.** Challenge pages are small. 50 KB cap on the
+   scan avoids false positives on long articles that happen to
+   mention "captcha" or "access denied" in prose.
+
+6. **Tests.** Table-driven coverage for each vendor's markers, the
+   50 KB body-size gate, non-HTML content-type short-circuit, and
+   `DetectSoftBlock: false` disable. Router escalation test (http
+   walls → chromium succeeds → per-tier SoftBlock preserved on the
+   successful record). Content aggregation tests (none / first tier
+   only / all tiers walled). `failure.Classify` tests for the new
+   category from both single-tier and all-tiers-exhausted error
+   shapes. `CatSoftBlock` added to `AllCategories()` — stats
+   aggregation picks it up automatically.
+
+**Not shipped (explicit follow-ups):**
+
+- CLI flag to disable detection. `DetectSoftBlock` is a Config bool;
+  no caller toggles it today. Add when a consumer asks for an escape
+  hatch.
+- Soft-block as a `--rotate-on-status` trigger. Adding it is one
+  lookup in `router.fetchWithProxyRotation`; hold for a proxy-pool
+  consumer who hits it in practice.
+- Structured soft-block stats breakdown in `internal/stats`. Per-
+  category counts already populate via `CatSoftBlock`; per-vendor
+  breakdown is additive if ever wanted.
 
 ### Phase: MCP server — SHIPPED 2026-04-16
 

@@ -126,7 +126,7 @@ trawl batch /tmp/rot.csv \
 **Pass criteria:**
 - Process exits cleanly
 - Every input URL has either a result row or a dead-letter row
-- Failure modes are categorized in stats: `dns_failure`, `tls_error`, `404`, `parked`, `cloudflare_block`, `extraction_failed`
+- Failure modes are categorized in stats: `dns_failure`, `tls_error`, `404`, `parked`, `cloudflare_block`, `soft_block`, `extraction_failed`
 
 ### Phase 2 — Full run (7065 rows)
 

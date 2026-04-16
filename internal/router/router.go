@@ -182,6 +182,7 @@ func (r *Router) Route(ctx context.Context, req engine.Request) (*Outcome, error
 			attempt.Result = cached
 			attempt.Valid = vr.Valid
 			attempt.Reason = vr.Reason
+			attempt.SoftBlock = vr.SoftBlock
 			attempt.FromCache = true
 			outcome.LastResult = cached
 			outcome.Attempts = append(outcome.Attempts, attempt)
@@ -214,6 +215,7 @@ func (r *Router) Route(ctx context.Context, req engine.Request) (*Outcome, error
 		attempt.Result = res
 		attempt.Valid = vr.Valid
 		attempt.Reason = vr.Reason
+		attempt.SoftBlock = vr.SoftBlock
 		outcome.LastResult = res
 		outcome.Attempts = append(outcome.Attempts, attempt)
 
@@ -381,4 +383,10 @@ type Attempt struct {
 	// cache instead of a live engine fetch. Useful for per-tier stats
 	// aggregation to distinguish cache-served rows from live ones.
 	FromCache bool
+	// SoftBlock is non-nil when the validity checker classified this
+	// attempt's body as an anti-bot challenge wall. Preserved even on
+	// routes that eventually succeed via a later tier — downstream
+	// aggregators (see internal/job/content.go) surface it via
+	// metadata.soft_block as a forensic signal.
+	SoftBlock *validity.SoftBlockDetection
 }

@@ -26,6 +26,26 @@ type Result struct {
 	// fix (SPA shell, selector miss, 5xx). It is false when escalation would
 	// not help (bad URL, 4xx client errors other than 429).
 	Escalate bool
+	// SoftBlock is non-nil when the response was a 200 OK that looked like
+	// an anti-bot challenge wall (Cloudflare "Just a moment", Akamai
+	// challenge, DataDome captcha, etc.). When populated, Valid is false
+	// and Escalate is true — the router tries the next tier. The pointer
+	// survives for downstream consumers even on successful fetches via a
+	// later tier: router.Attempt preserves per-tier SoftBlock so a post-
+	// hoc observer can see "tier 1 got walled but tier 2 saved us."
+	SoftBlock *SoftBlockDetection
+}
+
+// SoftBlockDetection records which anti-bot vendor and marker triggered
+// the soft-block heuristic. Serialized via output.SoftBlockInfo — kept
+// distinct here so the validity package has no dependency on output.
+type SoftBlockDetection struct {
+	// Vendor is the anti-bot vendor family the marker came from.
+	// One of: cloudflare, akamai, datadome, incapsula, perimeterx, generic.
+	Vendor string
+	// Marker is the specific substring that matched. Useful for tuning
+	// the marker list when false positives surface in production.
+	Marker string
 }
 
 // Page is the minimal input a Checker needs.
@@ -51,13 +71,26 @@ type Config struct {
 	// DetectSPAShell: when true, look for framework hydration markers
 	// (<div id="root"></div> etc.) with no children.
 	DetectSPAShell bool
+	// DetectSoftBlock: when true, scan small text/html bodies for anti-bot
+	// challenge markers (Cloudflare "Just a moment", Akamai challenge,
+	// DataDome captcha, etc.) and treat matches as escalation-worthy
+	// failures even though the HTTP status is 200.
+	DetectSoftBlock bool
 }
+
+// SoftBlockMaxBytes caps the body size at which soft-block detection
+// runs. Real challenge pages are small (CF's "Just a moment" HTML is
+// ~4KB; Akamai's challenge is similar). Above this cap we skip the
+// scan to avoid false positives on long articles that mention
+// "captcha" or "challenge" in prose.
+const SoftBlockMaxBytes = 50 * 1024
 
 // Default returns a reasonable default Checker config.
 func Default() Config {
 	return Config{
-		MinBodyBytes:   512,
-		DetectSPAShell: true,
+		MinBodyBytes:    512,
+		DetectSPAShell:  true,
+		DetectSoftBlock: true,
 	}
 }
 
@@ -111,6 +144,22 @@ func (c defaultChecker) Check(p Page) Result {
 		return Result{Valid: false, Escalate: true, Reason: "body below threshold"}
 	}
 
+	// 3b. Soft-block detection. A 200 OK whose body smells like an
+	// anti-bot challenge wall is treated as an escalation-worthy
+	// failure — the next tier (typically chromium with stealth) may
+	// get through the challenge. Gated by body size so a long article
+	// that happens to mention "captcha" doesn't trip the detector.
+	if c.cfg.DetectSoftBlock && len(p.Body) <= SoftBlockMaxBytes {
+		if det := detectSoftBlock(p.Body); det != nil {
+			return Result{
+				Valid:     false,
+				Escalate:  true,
+				Reason:    "soft block: " + det.Vendor + "/" + det.Marker,
+				SoftBlock: det,
+			}
+		}
+	}
+
 	// 4+5. Parse once and run DOM-aware checks.
 	needsDOM := c.cfg.DetectSPAShell || len(c.cfg.RequiredSelectors) > 0
 	if needsDOM {
@@ -158,4 +207,74 @@ func httpReason(code int) string {
 		return "no response"
 	}
 	return "http " + strconv.Itoa(code)
+}
+
+// softBlockMarker pairs an anti-bot vendor with one case-insensitive
+// substring whose presence in a small text/html body strongly implies
+// a challenge wall rather than real content.
+type softBlockMarker struct {
+	vendor  string
+	pattern string // lowercased; detectSoftBlock lowercases the body once
+}
+
+// softBlockMarkers is the extensible catalog of challenge-page
+// signatures. Keep this list conservative — each marker is a substring
+// match, so a marker that also appears in legitimate body content
+// will false-positive on small pages. Vendor strings are the stable
+// API surface (exposed via output.SoftBlockInfo.Vendor); don't rename
+// without considering downstream consumers.
+var softBlockMarkers = []softBlockMarker{
+	// Cloudflare challenge / Turnstile / IUAM.
+	{"cloudflare", "cf-chl"},
+	{"cloudflare", "cf-browser-verification"},
+	{"cloudflare", "cf-turnstile"},
+	{"cloudflare", "just a moment"},
+	{"cloudflare", "checking your browser"},
+	{"cloudflare", "challenges.cloudflare.com"},
+
+	// Akamai Bot Manager.
+	{"akamai", "akam_blocked"},
+	{"akamai", "pardon our interruption"},
+	{"akamai", "reference #18."}, // Akamai's "Reference #18.xxxxx" block page prefix
+
+	// DataDome.
+	{"datadome", "datadome"},
+	{"datadome", "dd-captcha"},
+
+	// Imperva / Incapsula.
+	{"incapsula", "_incapsula_resource"},
+	{"incapsula", "incap_ses"},
+
+	// PerimeterX / HUMAN.
+	{"perimeterx", "px-captcha"},
+	{"perimeterx", "_pxaction"},
+	{"perimeterx", "_pxhd"},
+
+	// Generic CAPTCHA widgets loaded as the top-level content.
+	{"generic", "/recaptcha/api.js"},
+	{"generic", "hcaptcha.com/1/api.js"},
+
+	// Generic block / access-denied walls.
+	{"generic", "attention required"},
+	{"generic", "you have been blocked"},
+	{"generic", "access denied"},
+	{"generic", "request unsuccessful"},
+}
+
+// detectSoftBlock scans the body for any registered marker. Returns
+// the first hit (vendors are ordered from most-specific to most-
+// generic in softBlockMarkers, so a real CF challenge won't be
+// misclassified as "generic" just because the page also includes an
+// "Access denied" string).
+func detectSoftBlock(body []byte) *SoftBlockDetection {
+	if len(body) == 0 {
+		return nil
+	}
+	lower := strings.ToLower(string(body))
+	for _, m := range softBlockMarkers {
+		if strings.Contains(lower, m.pattern) {
+			return &SoftBlockDetection{Vendor: m.vendor, Marker: m.pattern}
+		}
+	}
+	return nil
 }

@@ -81,11 +81,36 @@ type Metadata struct {
 	// size they were before evasion shipped. The presence of this
 	// field is the audit trail for "was this crawl polite or not."
 	Evasion *EvasionStats `json:"evasion,omitempty"`
+	// SoftBlock is non-nil when any tier returned a 200 OK whose body
+	// matched an anti-bot challenge marker (Cloudflare "Just a moment",
+	// Akamai challenge, DataDome captcha, etc.). Populated even when a
+	// later tier succeeded — it's a forensic signal that a host serves
+	// walls on at least one tier, not a final outcome. The final outcome
+	// is in FailureCategory (= "soft_block" only when ALL tiers walled).
+	SoftBlock *SoftBlockInfo `json:"soft_block,omitempty"`
 	// PDF is populated when the fetched content was application/pdf
 	// and internal/pdf.Extract successfully produced markdown. Nil for
 	// HTML records. The pointer keeps default JSONL records the same
 	// size they were before the PDF engine shipped.
 	PDF *PDFInfo `json:"pdf,omitempty"`
+}
+
+// SoftBlockInfo captures the result of the soft-block heuristic across
+// every tier the router tried. Detected is true whenever at least one
+// tier's body matched a challenge marker. Vendor and Marker report the
+// first (highest-specificity) hit seen — markers are listed in
+// internal/validity in most-specific → most-generic order, so a real
+// Cloudflare challenge is never misclassified as "generic" just because
+// the page happens to also contain an "Access denied" string.
+//
+// Tiers lists the tier names whose attempts hit a soft-block, preserving
+// order. This lets a consumer answer "did HTTP wall but chromium
+// succeed?" without re-parsing the router's full Attempts list.
+type SoftBlockInfo struct {
+	Detected bool     `json:"detected"`
+	Vendor   string   `json:"vendor,omitempty"`
+	Marker   string   `json:"marker,omitempty"`
+	Tiers    []string `json:"tiers,omitempty"`
 }
 
 // EvasionStats records the active anti-detection features for one

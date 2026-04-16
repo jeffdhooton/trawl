@@ -544,6 +544,7 @@ populated:
 - `spa_shell` -- HTTP tier returned a content-free SPA shell (Chromium should handle)
 - `robots_blocked` -- blocked by robots.txt (unless `--ignore-robots`)
 - `cloudflare_block` -- Cloudflare challenge/firewall rejection (status 1020 or cf-chl text)
+- `soft_block` -- every tier returned a 200 OK whose body was an anti-bot challenge wall (CF "Just a moment", Akamai, DataDome, Incapsula, PerimeterX, captcha walls). Per-tier detections also surface under `metadata.soft_block` even on successful routes.
 - `parked_domain` -- domain is parked (generally via WPEngine signature)
 - `all_tiers_exhausted` -- every tier was attempted, none succeeded
 - `extraction_failed` -- fetch worked, post-fetch parsing failed (CSS / schema / PDF)

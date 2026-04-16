@@ -168,6 +168,10 @@ func routeAndBuildWithResult(ctx context.Context, r *router.Router, canonURL, or
 		}
 	}
 
+	if sb := aggregateSoftBlock(outcome.Attempts); sb != nil {
+		rec.Metadata.SoftBlock = sb
+	}
+
 	if routeErr != nil {
 		if rec.Tier == "" && len(outcome.Attempts) > 0 {
 			rec.Tier = outcome.Attempts[len(outcome.Attempts)-1].Tier
@@ -421,6 +425,32 @@ func writeScreenshot(dir, canonURL string, png []byte) (string, error) {
 func hashBody(b []byte) string {
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// aggregateSoftBlock walks every router attempt and, if any tier's
+// validity check flagged an anti-bot challenge wall, builds the
+// per-record SoftBlockInfo. The top-level Vendor/Marker come from the
+// first hit (markers are ordered most-specific → most-generic in
+// internal/validity, so CF challenges are never masked by a generic
+// "access denied" string). Tiers lists every tier that walled, in
+// attempt order — letting a consumer see patterns like "http walled,
+// chromium succeeded" without re-parsing the router outcome.
+func aggregateSoftBlock(attempts []router.Attempt) *output.SoftBlockInfo {
+	var info *output.SoftBlockInfo
+	for _, a := range attempts {
+		if a.SoftBlock == nil {
+			continue
+		}
+		if info == nil {
+			info = &output.SoftBlockInfo{
+				Detected: true,
+				Vendor:   a.SoftBlock.Vendor,
+				Marker:   a.SoftBlock.Marker,
+			}
+		}
+		info.Tiers = append(info.Tiers, a.Tier)
+	}
+	return info
 }
 
 // isHTML returns true if the Content-Type header smells like HTML.

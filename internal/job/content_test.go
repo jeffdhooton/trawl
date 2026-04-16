@@ -1,6 +1,11 @@
 package job
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jeffdhooton/trawl/internal/router"
+	"github.com/jeffdhooton/trawl/internal/validity"
+)
 
 func TestIsPDF(t *testing.T) {
 	cases := []struct {
@@ -56,5 +61,54 @@ func TestIsJSON(t *testing.T) {
 		if got := isJSON(tc.ct); got != tc.want {
 			t.Errorf("isJSON(%q) = %v, want %v", tc.ct, got, tc.want)
 		}
+	}
+}
+
+func TestAggregateSoftBlockNone(t *testing.T) {
+	attempts := []router.Attempt{
+		{Tier: "http", Valid: true},
+		{Tier: "chromium", Valid: true},
+	}
+	if got := aggregateSoftBlock(attempts); got != nil {
+		t.Errorf("expected nil when no attempt flagged soft-block, got %+v", got)
+	}
+}
+
+func TestAggregateSoftBlockFirstTierOnly(t *testing.T) {
+	attempts := []router.Attempt{
+		{Tier: "http", SoftBlock: &validity.SoftBlockDetection{Vendor: "cloudflare", Marker: "cf-chl"}},
+		{Tier: "chromium", Valid: true},
+	}
+	got := aggregateSoftBlock(attempts)
+	if got == nil {
+		t.Fatal("expected non-nil SoftBlockInfo")
+	}
+	if !got.Detected {
+		t.Errorf("Detected = false, want true")
+	}
+	if got.Vendor != "cloudflare" || got.Marker != "cf-chl" {
+		t.Errorf("vendor/marker = %q/%q, want cloudflare/cf-chl", got.Vendor, got.Marker)
+	}
+	if len(got.Tiers) != 1 || got.Tiers[0] != "http" {
+		t.Errorf("Tiers = %v, want [http]", got.Tiers)
+	}
+}
+
+func TestAggregateSoftBlockAllTiers(t *testing.T) {
+	// Both tiers walled — final outcome would be classified as
+	// soft_block. First vendor wins in the top-level Vendor/Marker.
+	attempts := []router.Attempt{
+		{Tier: "http", SoftBlock: &validity.SoftBlockDetection{Vendor: "cloudflare", Marker: "just a moment"}},
+		{Tier: "chromium", SoftBlock: &validity.SoftBlockDetection{Vendor: "cloudflare", Marker: "cf-chl"}},
+	}
+	got := aggregateSoftBlock(attempts)
+	if got == nil {
+		t.Fatal("expected non-nil SoftBlockInfo")
+	}
+	if got.Vendor != "cloudflare" || got.Marker != "just a moment" {
+		t.Errorf("expected first-hit vendor/marker, got %q/%q", got.Vendor, got.Marker)
+	}
+	if len(got.Tiers) != 2 || got.Tiers[0] != "http" || got.Tiers[1] != "chromium" {
+		t.Errorf("Tiers = %v, want [http chromium]", got.Tiers)
 	}
 }

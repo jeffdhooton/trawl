@@ -331,7 +331,11 @@ Which fields are populated:
 
 Failed records still get written, with `failure_category` set to one
 of the classified buckets (`http_4xx`, `dns_failure`, `tls_error`,
-`spa_shell`, etc.) — easy to `jq`-filter for the real failures.
+`spa_shell`, `soft_block`, etc.) — easy to `jq`-filter for the real
+failures. `soft_block` catches 200 OK challenge walls (Cloudflare
+"Just a moment", Akamai, DataDome, etc.); when a later tier gets
+through, the per-tier detection stays on the success record as
+`metadata.soft_block` for forensic analysis.
 
 ## Example schemas and configs
 
