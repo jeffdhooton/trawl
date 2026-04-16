@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jeffdhooton/trawl/internal/frontier"
+	"github.com/jeffdhooton/trawl/internal/job"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -146,16 +147,16 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 	ctx, cancel := signal.NotifyContext(parentCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if _, err := parseFieldSpecs(opts.selectors); err != nil {
+	if _, err := job.ParseFieldSpecs(opts.selectors); err != nil {
 		return err
 	}
-	if err := validateFormat(opts.format); err != nil {
+	if err := job.ValidateFormat(opts.format); err != nil {
 		return err
 	}
-	if err := validatePDFFlags(opts.pdf); err != nil {
+	if err := opts.pdf.toJob().Validate(); err != nil {
 		return err
 	}
-	logPDFConfig(opts.pdf)
+	opts.pdf.toJob().Log()
 	if opts.depth < 0 {
 		return fmt.Errorf("--depth must be >= 0")
 	}
@@ -165,9 +166,9 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 
 	id := opts.jobID
 	if id == "" {
-		id = newJobID()
+		id = job.NewID()
 	}
-	dir, err := jobDirFor(id)
+	dir, err := job.DirFor(id)
 	if err != nil {
 		return err
 	}
@@ -175,7 +176,7 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		return fmt.Errorf("mkdir job dir: %w", err)
 	}
 
-	cfg := &JobConfig{
+	cfg := &job.Config{
 		ID:              id,
 		CreatedAt:       time.Now().UTC(),
 		Selectors:       opts.selectors,
@@ -220,7 +221,7 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		CrawlLimit:      opts.limit,
 		CrawlSeed:       seedURL,
 	}
-	if err := cfg.save(dir); err != nil {
+	if err := cfg.Save(dir); err != nil {
 		return err
 	}
 
@@ -237,12 +238,12 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		return err
 	}
 
-	return runJob(ctx, dir, cfg)
+	return job.Run(ctx, dir, cfg)
 }
 
-// enqueueSeed adds the crawl seed at depth 0. It is idempotent — on resume
-// the seed will already exist and the Enqueue call returns added=false,
-// which we silently tolerate.
+// enqueueSeed adds the crawl seed at depth 0. It is idempotent — on
+// resume the seed will already exist and the Enqueue call returns
+// added=false, which we silently tolerate.
 func enqueueSeed(jobDir, seedURL string) error {
 	f, err := frontier.Open(filepath.Join(jobDir, "frontier"))
 	if err != nil {

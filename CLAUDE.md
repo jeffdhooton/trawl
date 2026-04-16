@@ -12,7 +12,20 @@ standalone CLI + library. It routes each URL through the cheapest
 engine that returns valid content. Persistent frontier, polite by
 default, single static binary.
 
-## Status (as of 2026-04-14)
+## Status (as of 2026-04-16)
+
+**Shipped (v0.8.0):** MCP server. `trawl mcp` exposes scrape/batch/
+crawl/map/sitemap as Model Context Protocol tools over stdio. Built
+on the official `modelcontextprotocol/go-sdk` v1.5.0 (pure Go, no
+CGO). Per-call hard caps: batch ≤50 URLs, crawl ≤500, map ≤5000;
+above the cap the error message points at the CLI subcommand. New
+`internal/job` package extracted from cmd/trawl — `Run` (frontier-
+backed), `RunOne` (single URL), `RunMap` (in-memory BFS) are the
+three entry points used by both CLI commands and MCP tools.
+JobConfig renamed to job.Config, JSON tags preserved exactly so
+existing `$TRAWL_HOME/jobs/<id>/config.json` files still resume
+cleanly. Design doc: `docs/MCP.md`. Decision log:
+`docs/DECISIONS.md` (2026-04-16).
 
 **Shipped (v0.7.0):** PDF engine. Parallel content-type branch off
 the HTTP engine — when a response's Content-Type is
@@ -69,6 +82,9 @@ Any fresh session should skim these in order (5 minutes total):
 4. `docs/BENCHMARK.md` §"Decision rule: does Lightpanda ship at all?"
    — the falsifiable rule that closed the Lightpanda question.
 5. `docs/TODO.md` — standing commitments and open papercuts.
+6. `docs/MCP.md` — MCP server design, agent registration recipes,
+   and the `internal/job` extraction context (only relevant when
+   touching the orchestration layer or MCP tools).
 
 ## Roadmap and priorities
 
@@ -104,7 +120,7 @@ the next session must know" in `docs/DECISIONS.md`.
 ## Project layout
 
 ```
-cmd/trawl/              cobra entrypoint, scrape/batch/crawl/map/sitemap/resume/proxy-test commands
+cmd/trawl/              cobra entrypoint, scrape/batch/crawl/map/sitemap/resume/proxy-test/mcp commands (flag binding + thin shims to internal/job)
 scripts/install.sh      one-liner installer end users copy-paste (pulls latest release from GitHub)
 .goreleaser.yaml        GoReleaser build matrix (darwin+linux × amd64+arm64, CGO off, ldflags version injection)
 .github/workflows/      release.yml — CI workflow triggered on v* tag push, runs tests + GoReleaser
@@ -114,6 +130,8 @@ internal/engine/        HTTP + Chromium engines, Engine interface (Request.WantS
 internal/extract/       goquery CSS extractor + FirstLink / AllLinks resolvers
 internal/failure/       Classify() — maps errors to discrete categories
 internal/frontier/      BadgerDB-backed URL queue (blocking Next for crawl)
+internal/job/           orchestration: Config, Run/RunOne/RunMap, content pipeline, evasion/proxy/PDF Apply funcs (extracted from cmd/trawl in v0.8.0)
+internal/mcp/           MCP server: 5 tools (scrape/batch/crawl/map/sitemap), in-memory transport tests
 internal/output/        JSONL + CSV/TSV sinks, Record type, NewFile dispatcher
 internal/pdf/           PDF → markdown engine (pdftotext, pdfinfo, pdftoppm + tesseract OCR)
 internal/politeness/    robots.txt cache + per-domain rate/concurrency + per-host HostRules

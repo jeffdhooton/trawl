@@ -1,4 +1,4 @@
-package main
+package job
 
 import (
 	"net/http"
@@ -82,8 +82,8 @@ func TestLoadProxyPoolRejectsNoScheme(t *testing.T) {
 func TestApplyProxyMutualExclusion(t *testing.T) {
 	httpCfg := engine.DefaultHTTPConfig()
 	chromiumCfg := engine.DefaultChromiumConfig()
-	opts := proxyOpts{proxyURL: "http://x:8080", proxyFile: "/tmp/p.txt"}
-	_, err := applyProxy(&httpCfg, &chromiumCfg, opts)
+	opts := ProxyOpts{URL: "http://x:8080", File: "/tmp/p.txt"}
+	_, err := ApplyProxy(&httpCfg, &chromiumCfg, opts)
 	if err == nil {
 		t.Fatal("expected mutual exclusion error")
 	}
@@ -97,12 +97,10 @@ func TestDomainStickyRotatorRotate(t *testing.T) {
 	}
 	rot := &domainStickyRotator{pool: pool, assigned: make(map[string]int)}
 
-	// Initial assignment for example.com
 	req, _ := http.NewRequest("GET", "https://example.com/", nil)
 	p1, _ := rot.proxyForRequest(req)
 	originalHost := p1.Host
 
-	// Rotate should move to the next proxy.
 	if !rot.Rotate("example.com") {
 		t.Fatal("Rotate returned false, want true")
 	}
@@ -111,14 +109,12 @@ func TestDomainStickyRotatorRotate(t *testing.T) {
 		t.Errorf("after Rotate, proxy should differ: got %s again", p2.Host)
 	}
 
-	// Rotate again — should move again.
 	rot.Rotate("example.com")
 	p3, _ := rot.proxyForRequest(req)
 	if p3.Host == p2.Host {
 		t.Errorf("second Rotate didn't change proxy: %s", p3.Host)
 	}
 
-	// Rotate wraps around the pool.
 	rot.Rotate("example.com")
 	p4, _ := rot.proxyForRequest(req)
 	if p4.Host != originalHost {
@@ -145,7 +141,6 @@ func TestDomainStickyRotatorRotateUnknownDomain(t *testing.T) {
 	}
 	rot := &domainStickyRotator{pool: pool, assigned: make(map[string]int)}
 
-	// Rotate for a domain that was never assigned.
 	if rot.Rotate("never-seen.com") {
 		t.Fatal("Rotate should return false for unassigned domain")
 	}
@@ -162,8 +157,8 @@ func TestParseStatusCodes(t *testing.T) {
 		{" 403 , 429 ", []int{403, 429}, false},
 		{"", nil, true},
 		{"abc", nil, true},
-		{"99", nil, true},   // below 100
-		{"600", nil, true},  // above 599
+		{"99", nil, true},  // below 100
+		{"600", nil, true}, // above 599
 	}
 	for _, tt := range tests {
 		codes, err := parseStatusCodes(tt.input)
@@ -192,9 +187,9 @@ func TestParseStatusCodes(t *testing.T) {
 func TestApplyProxySingleURL(t *testing.T) {
 	httpCfg := engine.DefaultHTTPConfig()
 	chromiumCfg := engine.DefaultChromiumConfig()
-	opts := proxyOpts{proxyURL: "http://user:pass@gate.proxy.com:7000"}
-	if _, err := applyProxy(&httpCfg, &chromiumCfg, opts); err != nil {
-		t.Fatalf("applyProxy: %v", err)
+	opts := ProxyOpts{URL: "http://user:pass@gate.proxy.com:7000"}
+	if _, err := ApplyProxy(&httpCfg, &chromiumCfg, opts); err != nil {
+		t.Fatalf("ApplyProxy: %v", err)
 	}
 	if httpCfg.ProxyFunc == nil {
 		t.Fatal("ProxyFunc not set")
@@ -206,7 +201,6 @@ func TestApplyProxySingleURL(t *testing.T) {
 		t.Errorf("ChromiumConfig.ProxyURL = %q", chromiumCfg.ProxyURL)
 	}
 
-	// The proxy function should return the configured URL for any request.
 	req, _ := http.NewRequest("GET", "https://example.com/", nil)
 	u, err := httpCfg.ProxyFunc(req)
 	if err != nil {

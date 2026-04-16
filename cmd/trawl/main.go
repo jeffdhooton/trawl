@@ -62,6 +62,7 @@ Use "trawl proxy-test" to validate proxy connectivity before a long run.`,
 	cmd.AddCommand(newResumeCmd())
 	cmd.AddCommand(newSitemapCmd())
 	cmd.AddCommand(newProxyTestCmd())
+	cmd.AddCommand(newMCPCmd())
 
 	return cmd
 }

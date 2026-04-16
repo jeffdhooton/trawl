@@ -97,7 +97,31 @@ trawl batch companies.csv \
 
 # Resume a job that was SIGINT'd mid-crawl
 trawl resume <job-id>
+
+# Run as an MCP server (Claude Code, Cursor, Codex, etc. — see docs/MCP.md)
+trawl mcp
 ```
+
+## MCP server
+
+Trawl ships an MCP (Model Context Protocol) server so AI agents call
+trawl as a first-class tool — typed args, structured results, no
+shell-out parsing.
+
+```jsonc
+// .mcp.json (Claude Code) or ~/.cursor/mcp.json
+{
+  "mcpServers": {
+    "trawl": { "command": "trawl", "args": ["mcp"] }
+  }
+}
+```
+
+Five tools: `trawl_scrape`, `trawl_batch` (≤50 URLs/call),
+`trawl_crawl` (limit ≤500/call), `trawl_map` (≤5000/call),
+`trawl_sitemap`. Above the per-call caps, the error message points
+at the corresponding CLI subcommand. See [`docs/MCP.md`](docs/MCP.md)
+for the design and full registration recipes.
 
 ## Install
 

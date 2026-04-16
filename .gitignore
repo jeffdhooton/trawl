@@ -16,8 +16,12 @@ coverage.html
 
 # Local bench output (raw JSONL per run, never checked in)
 /bench/evasion/results-*/
+/bench/phase0/results-*/
 
 # Editor / OS
 .DS_Store
 .idea/
 .vscode/
+
+# Launch / social prep — not repo content
+tweets/

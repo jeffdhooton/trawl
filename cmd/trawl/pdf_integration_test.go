@@ -168,22 +168,3 @@ func TestScrapePDF_PageTitleCopiedWhenMetadataPDFHasTitle(t *testing.T) {
 	}
 }
 
-func TestIsPDF(t *testing.T) {
-	cases := []struct {
-		ct   string
-		want bool
-	}{
-		{"application/pdf", true},
-		{"application/pdf; charset=binary", true},
-		{"APPLICATION/PDF", true},
-		{"application/x-pdf", true},
-		{"text/html", false},
-		{"", false}, // unlike isHTML, empty is NOT pdf
-		{"application/json", false},
-	}
-	for _, tc := range cases {
-		if got := isPDF(tc.ct); got != tc.want {
-			t.Errorf("isPDF(%q) = %v, want %v", tc.ct, got, tc.want)
-		}
-	}
-}

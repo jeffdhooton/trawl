@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeffdhooton/trawl/internal/job"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -85,7 +86,7 @@ func runProxyTest(ctx context.Context, proxyURLStr, proxyFileStr, echoURL string
 		}
 		proxies = append(proxies, u)
 	} else {
-		pool, err := loadProxyPool(proxyFileStr)
+		pool, err := job.LoadProxyPool(proxyFileStr)
 		if err != nil {
 			return fmt.Errorf("load proxy file: %w", err)
 		}

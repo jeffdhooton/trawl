@@ -1,7 +1,7 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.7.0 shipped 2026-04-14**. PDF engine: parallel content-type branch off the HTTP engine, `internal/pdf` package, three-tier ladder (pdftotext → pdftotext -layout → tesseract OCR), `metadata.pdf` struct in output records, `--ocr` / `--ocr-lang` / `--pdf-max-pages` flags, soft-fail on missing poppler-utils. Closes the last Firecrawl content-extraction gap while keeping the no-CGO rule intact. Design doc: `docs/PDF.md`. Next targets consumer-driven.
-**Last updated:** 2026-04-14
+**Current phase:** Open — **v0.8.0 shipped 2026-04-16**. MCP server: `trawl mcp` exposes scrape/batch/crawl/map/sitemap as Model Context Protocol tools over stdio. Built on the official `modelcontextprotocol/go-sdk`. Required extracting cmd/trawl's orchestration into a new `internal/job` package — CLI commands shrank to flag-binding + cobra wiring. Hard caps (50/500/5000) on batch/crawl/map per call; over-cap errors point agents at the CLI. Design doc: `docs/MCP.md`. Decision log: `docs/DECISIONS.md` (2026-04-16 entry).
+**Last updated:** 2026-04-16
 
 This doc is the single source of truth for "what's next and why." The
 decision log in `docs/DECISIONS.md` captures one-off architectural
@@ -69,6 +69,7 @@ against trawl's current state, scope judgment, and rough cost.
 | LLM extraction                                     | ❌           | **no**   | —       |
 | Proxy support (single + rotating pool)              | ✅           | yes      | shipped |
 | PDF → markdown (text + layout + optional OCR)       | ✅           | yes      | shipped |
+| MCP server (agent-native tool surface)              | ✅           | yes      | shipped |
 | Search integration                                 | ❌           | **no**   | —       |
 | Webhooks / async API                               | ❌           | **no**   | —       |
 
@@ -552,6 +553,102 @@ target returns a block code, and a pre-run validation subcommand.
   validity checker's `Escalate=false` for rotate-worthy codes
   when all retries are spent. This is the one place the rotation
   logic intentionally overrides validity semantics.
+
+### Phase: MCP server — SHIPPED 2026-04-16
+
+**Why this phase:** trawl's positioning ("local-first web scraping
+for AI agents") has been pointing at MCP since POSITIONING.md
+landed. Until v0.8.0, agents called trawl by shelling out via Bash
+and parsing JSONL. MCP closes the loop: trawl appears in the agent's
+tool list with typed args, structured results, and per-tool
+when-to-use guidance written for LLMs. This is the only candidate on
+the roadmap that *changes what trawl is to its primary user*
+(an autonomous agent in a tool-use loop) rather than adding a feature.
+
+**What landed:**
+
+1. **`trawl mcp` cobra subcommand** — runs the MCP server over stdio
+   and blocks until ctx is cancelled or stdin closes. One-line entry
+   point in `cmd/trawl/mcp.go` that calls `internal/mcp.Run(ctx)`.
+
+2. **`internal/mcp` package** — five tools registered on a single
+   `mcp.Server`:
+   - `trawl_scrape` — one URL → one record (no cap).
+   - `trawl_batch` — list of URLs → list of records (cap 50).
+   - `trawl_crawl` — seed + depth + limit → list of records (limit cap 500).
+   - `trawl_map` — seed → URL list (sitemap + crawl, cap 5000).
+   - `trawl_sitemap` — site → URL list from sitemap(s) only (no cap).
+
+   Each tool's args struct carries jsonschema tags — those tags ARE
+   the documented surface the agent sees. Each tool's description
+   tells the agent when to use it AND when to skip it (so agents
+   pick the right tool without trial and error).
+
+   Hard caps on batch/crawl/map: above the cap, the error message
+   points at the corresponding CLI subcommand (which has the
+   persistent frontier + resume guarantees). MCP tool calls are for
+   inline-in-the-loop use, not multi-hour jobs.
+
+3. **`internal/job` package — orchestration extraction.** The
+   pre-MCP cmd/trawl mixed cobra wiring with the actual scraping
+   logic. To let MCP handlers call into the pipeline directly
+   (without subprocessing themselves), the orchestration moved into
+   a new package with three entry points:
+   - `Run(ctx, jobDir, *Config) error` — frontier-driven batch/crawl,
+     used by `trawl batch|crawl|resume` AND `trawl_batch`/`trawl_crawl`.
+   - `RunOne(ctx, url, ScrapeOpts) (Record, error)` — one URL, used
+     by `trawl scrape` AND `trawl_scrape`.
+   - `RunMap(ctx, seed, MapOpts, emit) error` — in-memory BFS for the
+     map crawl source, used by `trawl map` AND `trawl_map`.
+
+   Public types: `Config` (was `JobConfig`), `EvasionOpts`,
+   `ProxyOpts`, `PDFOpts`, `ContentOpts`, `ScrapeOpts`, `MapOpts`.
+   JSON tags on `Config` are byte-stable across the rename so
+   existing job dirs at `$TRAWL_HOME/jobs/<id>/config.json` still
+   resume cleanly.
+
+   cmd/trawl shrank to: cobra wiring, flag-binding option structs
+   (`scrapeOpts`, `batchOpts`, etc.), and translator funcs that
+   marshal flag values into job-package types and call into
+   `job.Run` / `job.RunOne` / `job.RunMap`. ~3700 lines reorganized;
+   tests all green; CLI behavior byte-identical (smoke-tested
+   scrape/batch/map on example.com after the refactor).
+
+4. **SDK choice — official `modelcontextprotocol/go-sdk` v1.5.0.**
+   Picked over the community `mark3labs/mcp-go` for stable v1.x
+   semver, the published spec-compatibility table, and production
+   validators (Google Cloud, Docker, Datadog, Anthropic). Pure Go,
+   no CGO, holds the single-static-binary constraint. See
+   `docs/DECISIONS.md` (2026-04-16) for the full evaluation.
+
+5. **Tests.** Three layers:
+   - In-memory MCP transport pair in `internal/mcp/server_test.go`
+     — covers tool registration, scrape/batch/map/sitemap/crawl
+     happy paths, and four input-validation paths (empty URL,
+     oversize batch, missing crawl limit, bad sources value).
+   - Subprocess test in `cmd/trawl/mcp_subprocess_test.go` — builds
+     the binary, spawns `trawl mcp`, connects via the SDK's
+     `CommandTransport`, calls `trawl_scrape` end-to-end. Catches
+     stdio framing, log-channel, and cobra wiring bugs the in-memory
+     tests can't see.
+   - Existing test suite (cmd/trawl + every internal package) all
+     green after the orchestration refactor — proves CLI behavior
+     unchanged.
+
+6. **Docs.** New `docs/MCP.md` covers the design, agent registration
+   recipes (Claude Code, Cursor, Codex, custom Go client), result
+   shape, and the design decisions (stdio-only, hard caps, per-call
+   temp dirs, no `resume` tool in v1).
+
+**Operational shape:**
+
+- stdio only — agents spawn `trawl mcp` as a subprocess. No HTTP/SSE
+  in v1; revisit if a remote-trawl consumer appears.
+- Per-call temp dirs for batch/crawl: `os.MkdirTemp` →
+  `os.RemoveAll`. No leftover frontier DBs.
+- Persistent tier-learning cache (`$TRAWL_HOME/tier-cache`) IS
+  shared between MCP and CLI calls.
+- All logs to stderr (zerolog default); stdout is JSON-RPC framing.
 
 ### Phase: PDF engine — SHIPPED 2026-04-14
 

@@ -8,7 +8,7 @@ import (
 )
 
 func TestValidatePDFFlags_OCRDisabled_AlwaysPasses(t *testing.T) {
-	if err := validatePDFFlags(pdfFlags{ocr: false}); err != nil {
+	if err := (pdfFlags{ocr: false}).toJob().Validate(); err != nil {
 		t.Errorf("want nil error when --ocr disabled, got %v", err)
 	}
 }
@@ -20,12 +20,11 @@ func TestValidatePDFFlags_OCREnabled_FailsWhenBinariesMissing(t *testing.T) {
 	pdf.ResetDetectionForTest()
 	t.Cleanup(pdf.ResetDetectionForTest)
 
-	err := validatePDFFlags(pdfFlags{ocr: true, ocrLang: "eng", pdfMaxPages: 50})
+	err := (pdfFlags{ocr: true, ocrLang: "eng", pdfMaxPages: 50}).toJob().Validate()
 	if err == nil {
 		t.Fatal("want error when --ocr set and binaries missing")
 	}
 	msg := err.Error()
-	// Error should name the missing binary AND the install hint.
 	if !strings.Contains(msg, "tesseract") || !strings.Contains(msg, "pdftoppm") {
 		t.Errorf("error should name both missing binaries; got %q", msg)
 	}
@@ -35,7 +34,7 @@ func TestValidatePDFFlags_OCREnabled_FailsWhenBinariesMissing(t *testing.T) {
 }
 
 func TestApplyPDFFlags_BuildsOpts(t *testing.T) {
-	got := applyPDFFlags(pdfFlags{ocr: true, ocrLang: "eng+deu", pdfMaxPages: 10})
+	got := (pdfFlags{ocr: true, ocrLang: "eng+deu", pdfMaxPages: 10}).toJob().Build()
 	if !got.UseOCR {
 		t.Error("UseOCR: want true")
 	}
@@ -46,8 +45,7 @@ func TestApplyPDFFlags_BuildsOpts(t *testing.T) {
 		t.Errorf("MaxPages: %d", got.MaxPages)
 	}
 
-	// Zero value maps correctly.
-	zero := applyPDFFlags(pdfFlags{})
+	zero := (pdfFlags{}).toJob().Build()
 	if zero.UseOCR {
 		t.Error("zero-value UseOCR should be false")
 	}

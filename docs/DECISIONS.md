@@ -6,6 +6,89 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-16 — MCP server, official `modelcontextprotocol/go-sdk`, stdio only
+
+**Decision:** Ship `trawl mcp` — a Model Context Protocol server over
+stdio that exposes the existing CLI surface (scrape, batch, crawl,
+map, sitemap) as agent tools. Built on the official
+`github.com/modelcontextprotocol/go-sdk` (v1.5.0). Stdio transport
+only for v1 — no HTTP/SSE. Hard caps on batch (50 URLs), crawl (500
+URLs), and map (5000 URLs) per call; above the cap the error message
+points at the corresponding CLI subcommand.
+
+This required extracting `cmd/trawl`'s orchestration into a new
+`internal/job` package so the MCP handlers can call `job.Run` /
+`job.RunOne` / `job.RunMap` directly, without subprocess-spawning
+themselves. CLI commands shrank to flag-binding + cobra wiring.
+
+**Context:** Trawl's positioning has been "designed for AI agents to
+call directly" since the POSITIONING.md doc. Until this PR, that
+manifested as a CLI-with-JSON-output that agents shell into via Bash.
+MCP closes the loop: the agent sees trawl as native tools with typed
+args, structured results, and per-tool when-to-use guidance written
+for LLMs. This is the most positioning-amplifying feature trawl can
+ship — every other on-roadmap candidate is a feature add; MCP is a
+shape change.
+
+**SDK choice — official over community:** Two viable Go SDKs:
+
+| | mark3labs/mcp-go (community) | modelcontextprotocol/go-sdk (official) |
+|---|---|---|
+| Version | v0.48.0 (still v0.x) | **v1.5.0 (stable)** |
+| Stars | 8.6k | 4.4k |
+| Production users | community | **Google Cloud, Docker, Datadog, Anthropic, gopls** |
+| API style | option-based DSL | generic `AddTool[Args]` from struct |
+| Spec versioning | informal | **published compatibility table** |
+| Extra deps | minimal | oauth2/jwt (unused by us) |
+
+Picked official for: stable v1.x semver (mark3labs has shipped
+breaking minors), maintained spec-compatibility commitment, and
+struct-based tool definitions that fit trawl's existing
+JobConfig-with-JSON-tags pattern naturally. Tradeoff: slightly more
+verbose API and a few oauth2/jwt deps in `go.sum` we don't use. Worth
+it for the stability story trawl's "polite, predictable, single
+static binary" positioning demands.
+
+**stdio only for v1:** The SDK supports HTTP/SSE but adding it brings
+auth, CORS, deployment, and a daemon lifecycle — none of which has a
+clear consumer ask. Stdio matches trawl's "binary spawned by agent"
+model exactly. Revisit if a remote-trawl use case appears.
+
+**Hard caps:** A tool call should be a coherent unit of work. 50
+URLs in a batch fits in seconds; 500 in a crawl fits in minutes;
+5000 in a map fits comfortably. Beyond that, you want the persistent
+frontier + resume + per-job stats that the CLI gives. The MCP error
+message points at the CLI alternative explicitly.
+
+**Per-call temp dirs:** `trawl_batch` and `trawl_crawl` create a
+fresh `os.MkdirTemp` job dir per call, run there, read JSONL output
+back into memory, and `os.RemoveAll` on return. No cross-call state.
+The persistent tier-learning cache at `$TRAWL_HOME/tier-cache` is
+still consulted (and updated) so MCP and CLI calls share learning.
+
+**internal/job extraction:** The orchestration refactor was the bulk
+of the work — `cmd/trawl/{job,runner,router,contentcache,tiercache}.go`
+and parts of scrape/batch/crawl/map/proxy/evasion/pdf_flags moved
+into a new `internal/job` package with three entry points: `Run`
+(frontier-driven batch/crawl), `RunOne` (single URL), `RunMap` (map
+crawl source). cmd/trawl now contains only cobra wiring + flag
+binding. JSON tags on `Config` (was `JobConfig`) preserved exactly
+so existing job dirs still resume. ~3700 lines reorganized; tests
+all green; CLI behavior byte-identical (smoke-tested scrape/batch/map
+on example.com).
+
+**What would change our minds:**
+- A remote-trawl consumer (e.g. a hosted agent platform) wanting
+  HTTP transport.
+- Real evidence that the per-call caps are wrong — feedback from
+  agents getting cut off at 50 URLs that should have been allowed
+  more, OR resource exhaustion from agents trying to crawl 500 URLs
+  inside a single MCP call.
+- An async-progress consumer use case that justifies adding MCP
+  progress notifications + a `resume` tool.
+
+---
+
 ## 2026-04-14 — PDF engine: shell out to poppler, decline the standalone Rust competitor
 
 **Decision:** Build a PDF engine inside trawl that shells out to

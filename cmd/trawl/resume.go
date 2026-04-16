@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/jeffdhooton/trawl/internal/job"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -29,7 +30,7 @@ func runResume(parentCtx context.Context, jobID string) error {
 	ctx, cancel := signal.NotifyContext(parentCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	dir, err := jobDirFor(jobID)
+	dir, err := job.DirFor(jobID)
 	if err != nil {
 		return err
 	}
@@ -37,7 +38,7 @@ func runResume(parentCtx context.Context, jobID string) error {
 		return fmt.Errorf("job %q not found at %s: %w", jobID, dir, err)
 	}
 
-	cfg, err := loadJobConfig(dir)
+	cfg, err := job.Load(dir)
 	if err != nil {
 		return err
 	}
@@ -47,5 +48,5 @@ func runResume(parentCtx context.Context, jobID string) error {
 		Str("output", cfg.OutputPath).
 		Msg("resuming job")
 
-	return runJob(ctx, dir, cfg)
+	return job.Run(ctx, dir, cfg)
 }

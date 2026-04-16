@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jeffdhooton/trawl/internal/frontier"
+	"github.com/jeffdhooton/trawl/internal/job"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -136,7 +137,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 	defer cancel()
 
 	// Validate selectors early.
-	if _, err := parseFieldSpecs(opts.selectors); err != nil {
+	if _, err := job.ParseFieldSpecs(opts.selectors); err != nil {
 		return err
 	}
 
@@ -145,19 +146,19 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		return fmt.Errorf("--fallback-column and --fallback-selector must be used together")
 	}
 
-	if err := validateFormat(opts.format); err != nil {
+	if err := job.ValidateFormat(opts.format); err != nil {
 		return err
 	}
-	if err := validatePDFFlags(opts.pdf); err != nil {
+	if err := opts.pdf.toJob().Validate(); err != nil {
 		return err
 	}
-	logPDFConfig(opts.pdf)
+	opts.pdf.toJob().Log()
 
 	id := opts.jobID
 	if id == "" {
-		id = newJobID()
+		id = job.NewID()
 	}
-	dir, err := jobDirFor(id)
+	dir, err := job.DirFor(id)
 	if err != nil {
 		return err
 	}
@@ -165,7 +166,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		return fmt.Errorf("mkdir job dir: %w", err)
 	}
 
-	cfg := &JobConfig{
+	cfg := &job.Config{
 		ID:               id,
 		CreatedAt:        time.Now().UTC(),
 		Selectors:        opts.selectors,
@@ -208,7 +209,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		OCRLang:           opts.pdf.ocrLang,
 		PDFMaxPages:       opts.pdf.pdfMaxPages,
 	}
-	if err := cfg.save(dir); err != nil {
+	if err := cfg.Save(dir); err != nil {
 		return err
 	}
 
@@ -222,7 +223,7 @@ func runBatch(parentCtx context.Context, urlFile string, opts batchOpts) error {
 		return err
 	}
 
-	return runJob(ctx, dir, cfg)
+	return job.Run(ctx, dir, cfg)
 }
 
 // resolveOutputPath interprets the --output flag:

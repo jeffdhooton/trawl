@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "trawl": {
+      "command": "trawl",
+      "args": ["mcp"]
+    }
+  }
+}
