@@ -55,6 +55,8 @@ type Config struct {
 	Readability    bool     `json:"readability,omitempty"`
 	NoMetadata     bool     `json:"no_metadata,omitempty"`
 	ScreenshotDir  string   `json:"screenshot_dir,omitempty"`
+	ViewportWidth  int      `json:"viewport_width,omitempty"`
+	ViewportHeight int      `json:"viewport_height,omitempty"`
 	SchemaPath     string   `json:"schema_path,omitempty"`
 	CSVColumns     []string `json:"csv_columns,omitempty"`
 	Retries        int      `json:"retries,omitempty"`

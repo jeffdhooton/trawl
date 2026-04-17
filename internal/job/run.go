@@ -87,6 +87,8 @@ func Run(ctx context.Context, jobDir string, cfg *Config) error {
 	gateCfg.MaxConcurrentGlobal = cfg.Concurrency
 
 	chromiumCfg := engine.DefaultChromiumConfig()
+	chromiumCfg.ViewportWidth = cfg.ViewportWidth
+	chromiumCfg.ViewportHeight = cfg.ViewportHeight
 	jobEvasion := EvasionOpts{
 		BrowserLike:       cfg.BrowserLike,
 		UserAgentStrategy: cfg.UserAgentStrategy,
@@ -285,6 +287,8 @@ type ScrapeOpts struct {
 	Readability    bool
 	NoMetadata     bool
 	ScreenshotDir  string
+	ViewportWidth  int
+	ViewportHeight int
 	CacheEnabled   bool
 	CacheTTL       time.Duration
 	CachePath      string
@@ -334,6 +338,8 @@ func RunOne(parentCtx context.Context, rawURL string, opts ScrapeOpts) (output.R
 	gateCfg.UserAgent = httpCfg.UserAgent
 	gateCfg.IgnoreRobots = opts.IgnoreRobots
 	chromiumCfg := engine.DefaultChromiumConfig()
+	chromiumCfg.ViewportWidth = opts.ViewportWidth
+	chromiumCfg.ViewportHeight = opts.ViewportHeight
 	if err := ApplyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.Evasion); err != nil {
 		return output.Record{}, err
 	}

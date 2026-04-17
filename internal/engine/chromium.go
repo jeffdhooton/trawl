@@ -53,6 +53,13 @@ type ChromiumConfig struct {
 	// dance is a no-op here — but stamping it on the result keeps
 	// metadata.evasion consistent for jobs that mix tiers.
 	BrowserLike bool
+	// ViewportWidth and ViewportHeight set the browser window size
+	// via the --window-size launch flag. Both zero leaves chromedp's
+	// default (~756×556) in place. Mostly useful for screenshots on
+	// sites that render responsively, and for forcing a consistent
+	// media-query state across runs.
+	ViewportWidth  int
+	ViewportHeight int
 }
 
 // DefaultChromiumConfig returns chromium defaults geared toward scraping.
@@ -147,6 +154,9 @@ func (c *Chromium) allocator(parent context.Context) (context.Context, error) {
 	}
 	if c.cfg.ProxyURL != "" {
 		opts = append(opts, chromedp.ProxyServer(c.cfg.ProxyURL))
+	}
+	if c.cfg.ViewportWidth > 0 && c.cfg.ViewportHeight > 0 {
+		opts = append(opts, chromedp.WindowSize(c.cfg.ViewportWidth, c.cfg.ViewportHeight))
 	}
 
 	// Allocator outlives individual Fetch calls so the browser is reused.

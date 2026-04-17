@@ -26,6 +26,7 @@ type scrapeOpts struct {
 	readability    bool
 	noMetadata     bool
 	screenshotDir  string
+	viewport       string
 	cacheEnabled   bool
 	cacheTTL       time.Duration
 	cachePath      string
@@ -86,6 +87,8 @@ Use --selector name=css multiple times to extract structured fields:
 		"skip automatic page metadata extraction (title, OG, canonical, JSON-LD)")
 	cmd.Flags().StringVar(&opts.screenshotDir, "screenshot-dir", "",
 		"directory to write full-page PNG screenshots into. Only chromium-served pages produce a file.")
+	cmd.Flags().StringVar(&opts.viewport, "viewport", "",
+		`chromium window size as WxH (e.g. "1920x1080"). Affects screenshot width and any width-sensitive responsive rendering. Chromium tier only.`)
 	cmd.Flags().BoolVar(&opts.cacheEnabled, "cache", false,
 		"opt in to the cross-job content cache. Cached entries short-circuit the tier loop on hit.")
 	cmd.Flags().DurationVar(&opts.cacheTTL, "cache-ttl", 24*time.Hour,
@@ -128,6 +131,11 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 	}
 	defer sink.Close()
 
+	vpW, vpH, err := parseViewport(opts.viewport)
+	if err != nil {
+		return err
+	}
+
 	scrapeOpts := job.ScrapeOpts{
 		Selectors:      opts.selectors,
 		Output:         sink,
@@ -141,6 +149,8 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		Readability:    opts.readability,
 		NoMetadata:     opts.noMetadata,
 		ScreenshotDir:  opts.screenshotDir,
+		ViewportWidth:  vpW,
+		ViewportHeight: vpH,
 		CacheEnabled:   opts.cacheEnabled,
 		CacheTTL:       opts.cacheTTL,
 		CachePath:      opts.cachePath,
