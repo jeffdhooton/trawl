@@ -32,6 +32,7 @@ type crawlOpts struct {
 	readability    bool
 	noMetadata     bool
 	screenshotDir  string
+	viewport       string
 	cacheEnabled   bool
 	cacheTTL       time.Duration
 	cachePath      string
@@ -108,6 +109,8 @@ Example:
 		"skip automatic page metadata extraction (title, OG, canonical, JSON-LD)")
 	cmd.Flags().StringVar(&opts.screenshotDir, "screenshot-dir", "",
 		"directory to write full-page PNG screenshots into. Only chromium-served pages produce a file.")
+	cmd.Flags().StringVar(&opts.viewport, "viewport", "",
+		`chromium window size as WxH (e.g. "1920x1080"). Affects screenshot width and any width-sensitive responsive rendering. Chromium tier only.`)
 	cmd.Flags().BoolVar(&opts.cacheEnabled, "cache", false,
 		"opt in to the cross-job content cache. Cached entries short-circuit the tier loop on hit.")
 	cmd.Flags().DurationVar(&opts.cacheTTL, "cache-ttl", 24*time.Hour,
@@ -150,6 +153,11 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 	if _, err := job.ParseFieldSpecs(opts.selectors); err != nil {
 		return err
 	}
+	vpW, vpH, err := parseViewport(opts.viewport)
+	if err != nil {
+		return err
+	}
+
 	if err := job.ValidateFormat(opts.format); err != nil {
 		return err
 	}
@@ -193,6 +201,8 @@ func runCrawl(parentCtx context.Context, seedURL string, opts crawlOpts) error {
 		Readability:     opts.readability,
 		NoMetadata:      opts.noMetadata,
 		ScreenshotDir:   opts.screenshotDir,
+		ViewportWidth:   vpW,
+		ViewportHeight:  vpH,
 		CacheEnabled:    opts.cacheEnabled,
 		CacheTTL:        opts.cacheTTL.String(),
 		CachePath:       opts.cachePath,
