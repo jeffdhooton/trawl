@@ -1,8 +1,7 @@
 # trawl — roadmap
 
-**Current phase:** Open — **v0.8.2 shipped 2026-04-16**. Chromium stealth depth enhancement. `internal/engine/stealth.js` grew from ~110 → ~280 lines adding canvas fingerprint noise (`toDataURL`/`toBlob`/`getImageData` with per-session XOR jitter, WeakSet-idempotent within document), audio fingerprint noise (`AnalyserNode`, `AudioBuffer.getChannelData`), rich `window.chrome` (`.app`/`.csi`/`.loadTimes` shims matching real Chrome's deprecated surface), expanded `Permissions.query` beyond notifications, `Notification.permission` → 'default' override, `Navigator.prototype.webdriver` proto-level defense, and `navigator.deviceMemory`/`hardwareConcurrency` defaults when missing. Live-verified against real CF/DataDome/PerimeterX walls: Cloudflare IUAM now defeats (glassdoor.com confirmed); DataDome and PerimeterX still catch trawl's chromium path (fingerprint surface beyond what JS-level patches can cover), but v0.8.1's soft-block telemetry cleanly attributes each failure to the right vendor. EVASION.md §5.2 gets a SHIPPED 2026-04-16 depth-enhancement subsection; DECISIONS.md new top entry explains the in-tree-over-vendor call and the technical gotchas (WeakSet idempotency, `outerWidth` JS-unforgeability). Previously in v0.8.1: soft-block detection; v0.8.0: MCP server.
-**Last updated:** 2026-04-16 `internal/validity` now scans small (≤50 KB) `text/html` bodies for anti-bot challenge markers (Cloudflare "Just a moment"/Turnstile/`cf-chl`, Akamai, DataDome, Incapsula, PerimeterX, top-level recaptcha/hcaptcha, generic "Access denied") and returns `Escalate: true` so the router tries the next tier instead of silently recording a wall as success. Per-tier `{vendor, marker}` detections propagate through `router.Attempt.SoftBlock` and aggregate into `metadata.soft_block` on every record — populated even when a later tier succeeded (forensic signal). `failure.CatSoftBlock` fires when every tier walled. EVASION.md §9.6 SHIPPED. Decision log: `docs/DECISIONS.md` (2026-04-16, newest entry). Previously in v0.8.0: MCP server (`trawl mcp`) — see `docs/MCP.md` and the earlier DECISIONS.md entry.
-**Last updated:** 2026-04-16
+**Current phase:** Open — **v0.8.4 shipped 2026-04-17**. Chromium viewport sizing (`--viewport WxH`) on scrape/batch/crawl commands. Previously: v0.8.2 chromium stealth depth, v0.8.1 soft-block detection, v0.8.0 MCP server.
+**Last updated:** 2026-04-17
 
 This doc is the single source of truth for "what's next and why." The
 decision log in `docs/DECISIONS.md` captures one-off architectural
@@ -555,6 +554,29 @@ target returns a block code, and a pre-run validation subcommand.
   validity checker's `Escalate=false` for rotate-worthy codes
   when all retries are spent. This is the one place the rotation
   logic intentionally overrides validity semantics.
+
+### Phase: Chromium viewport sizing — SHIPPED 2026-04-17
+
+**What landed:**
+1. New `--viewport WxH` flag (e.g. `--viewport 1440x900`) on
+   scrape, batch, and crawl commands. Controls the chromium
+   browser window size via `chromedp.WindowSize`, affecting
+   responsive CSS breakpoints and full-page screenshot dimensions.
+   Both-zero (the default) preserves chromedp's ~756×556 default.
+2. `cmd/trawl/viewport.go` parser validates the `WxH` format,
+   rejects non-numeric, zero, or negative components.
+3. Plumbing: `scrapeOpts.viewport` / `batchOpts.viewport` /
+   `crawlOpts.viewport` → `parseViewport` → `job.Config.ViewportWidth`
+   / `ViewportHeight` → `engine.ChromiumConfig.ViewportWidth` /
+   `ViewportHeight` → `chromedp.WindowSize` launch flag.
+4. `job.Config` JSON tags `viewport_width` / `viewport_height`
+   (omitempty) so resumed jobs preserve the viewport setting.
+
+**Scope note:** This is viewport sizing for layout and screenshots,
+NOT the deferred CDP `Emulation.setDeviceMetricsOverride` for
+defeating JS-level `outerWidth`/`outerHeight` fingerprint checks.
+The two are related but separate concerns — see EVASION.md §5.2
+and DECISIONS.md (2026-04-16 stealth entry) for the deferral note.
 
 ### Phase: Chromium stealth depth — SHIPPED 2026-04-16
 

@@ -85,6 +85,10 @@ trawl batch urls.txt --selector "title=h1" --cache -o results.jsonl
 # Full-page PNG screenshots for chromium-served pages
 trawl scrape https://linear.app --tiers chromium --screenshot-dir shots/
 
+# Desktop + mobile screenshots with explicit viewport sizing
+trawl batch urls.txt --force-tier chromium --viewport 1440x900 --screenshot-dir shots/desktop/
+trawl batch urls.txt --force-tier chromium --viewport 390x844 --screenshot-dir shots/mobile/
+
 # Per-host politeness: slow-crawl SEP, normal speed elsewhere
 trawl batch mixed-urls.txt --politeness docs/examples/politeness.yaml
 
@@ -218,6 +222,8 @@ See [`claude-skill/README.md`](claude-skill/README.md) for details.
   working Stanford Encyclopedia of Philosophy schema.
 - **Screenshots.** `--screenshot-dir dir/` captures a full-page PNG
   for every chromium-served row via chromedp's `captureBeyondViewport`.
+  `--viewport WxH` (e.g. `1440x900`) controls the chromium window
+  size, affecting responsive breakpoints and screenshot width.
   Deterministic filenames (`<sha256-of-url>.png`) so re-runs overwrite
   rather than accumulate. HTTP-served rows leave `metadata.screenshot_path`
   empty — zero cost on the happy path.
@@ -266,15 +272,17 @@ See [`claude-skill/README.md`](claude-skill/README.md) for details.
 
 ## Commands
 
-| Command         | What it does                                               |
-| --------------- | ---------------------------------------------------------- |
-| `trawl scrape`  | Scrape one URL, emit one record                            |
-| `trawl batch`   | Scrape a URL list (plain text, CSV, or TSV), resumable     |
-| `trawl crawl`   | BFS-crawl a site from a seed URL                           |
-| `trawl map`     | Enumerate URLs from a site (sitemap + HTML crawl)          |
-| `trawl sitemap` | Discover URLs from a site's sitemap(s) only                |
-| `trawl resume`  | Resume an interrupted job by ID                            |
-| `trawl version` | Print version info                                         |
+| Command             | What it does                                               |
+| ------------------- | ---------------------------------------------------------- |
+| `trawl scrape`      | Scrape one URL, emit one record                            |
+| `trawl batch`       | Scrape a URL list (plain text, CSV, or TSV), resumable     |
+| `trawl crawl`       | BFS-crawl a site from a seed URL                           |
+| `trawl map`         | Enumerate URLs from a site (sitemap + HTML crawl)          |
+| `trawl sitemap`     | Discover URLs from a site's sitemap(s) only                |
+| `trawl resume`      | Resume an interrupted job by ID                            |
+| `trawl proxy-test`  | Validate proxy connectivity before a long run              |
+| `trawl mcp`         | Run as an MCP server (stdio) for AI agent tool-use         |
+| `trawl version`     | Print version info                                         |
 
 Run `trawl <command> --help` for the full flag surface.
 

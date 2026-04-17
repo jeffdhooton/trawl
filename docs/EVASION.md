@@ -443,12 +443,16 @@ Seven patches added (stealth.js grew ~110 → ~280 lines):
 
 **NOT SHIPPED (deferred, JS-unreachable):**
 
-- **`window.outerWidth` / `outerHeight` realism.** Chromium exposes
-  these as unforgeable [Replaceable] accessors on the Window
+- **`window.outerWidth` / `outerHeight` JS-level spoofing.** Chromium
+  exposes these as unforgeable [Replaceable] accessors on the Window
   instance; `Object.defineProperty(window, ...)` and
   `window.__defineGetter__` are both silently rejected. A proper
   fix requires CDP `Emulation.setDeviceMetricsOverride` from the
-  Go side. Deferred — not a JS-level concern.
+  Go side. Deferred — not a JS-level concern. **Note (2026-04-17):**
+  `--viewport WxH` (shipped v0.8.3/v0.8.4) sets the real chromium
+  window size for layout and screenshots, but does NOT spoof the
+  JS-visible `outerWidth`/`outerHeight` values that fingerprint
+  detectors read. These are separate concerns.
 - **Font enumeration defense.** Measuring text widths against
   known fonts is a real fingerprint surface, but the obvious
   interventions (block `measureText`, alias fonts) risk breaking

@@ -6,6 +6,41 @@ what the data said, and what would change our minds.
 
 ---
 
+## 2026-04-17 — `--viewport WxH` flag for chromium window sizing
+
+**Decision:** Add a `--viewport` flag to scrape/batch/crawl that sets
+the chromium window size via `chromedp.WindowSize`. Format is `WxH`
+(e.g. `1440x900`). Both-zero default preserves existing behavior.
+
+**Context:** Full-page screenshots were capturing at chromedp's tiny
+default (~756×556), which gave misleading results for responsive
+sites. The immediate use case was capturing desktop (1440×900) and
+mobile (390×844) screenshots of a personal site; the general case
+is any workflow where the operator needs to control which CSS
+breakpoints fire or wants consistent screenshot widths across runs.
+
+**Why `WxH` string format:** Matches browser conventions (Chrome's
+`--window-size=W,H`, CSS `WxH` viewport shorthand). A single flag
+is simpler than `--viewport-width` + `--viewport-height` pairs, and
+the parser rejects malformed input with clear error messages.
+
+**Relationship to outerWidth/outerHeight deferral:** `--viewport`
+sets the real chromium window size, which affects layout and
+screenshots. It does NOT address the deferred
+`Emulation.setDeviceMetricsOverride` concern from v0.8.2's stealth
+entry — JS-level fingerprint checks that read `window.outerWidth`
+still see chromium's native values, not spoofed ones. These are
+separate concerns: viewport is a layout tool, CDP emulation is
+an anti-detection tool. The deferral stands.
+
+**What would change our minds:** If a consumer needs per-page
+viewport switching within a single batch (e.g. mobile for some
+URLs, desktop for others), we'd need to move viewport from a
+launch flag to per-navigation `Emulation.setDeviceMetricsOverride`
+— which would also close the fingerprint gap as a side effect.
+
+---
+
 ## 2026-04-16 — chromium stealth depth: canvas/audio fingerprint noise + rich platform shims
 
 **Decision:** Extend the in-tree stealth init script from the v0.5.0-

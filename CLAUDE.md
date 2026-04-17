@@ -12,7 +12,19 @@ standalone CLI + library. It routes each URL through the cheapest
 engine that returns valid content. Persistent frontier, polite by
 default, single static binary.
 
-## Status (as of 2026-04-16)
+## Status (as of 2026-04-17)
+
+**Shipped (v0.8.4):** Viewport flag on all commands. `--viewport WxH`
+(e.g. `--viewport 1440x900`) controls the chromium window size,
+affecting responsive rendering breakpoints and screenshot capture
+dimensions. Plumbed through `job.Config` → `engine.ChromiumConfig`
+→ `chromedp.WindowSize`. Both-zero (the default) preserves
+chromedp's ~756×556 default. Initially landed on scrape only in
+v0.8.3; v0.8.4 wired it to batch and crawl as well. Note: this is
+viewport sizing for layout control, NOT the deferred CDP
+`Emulation.setDeviceMetricsOverride` for defeating JS-level
+`outerWidth`/`outerHeight` fingerprint checks (still deferred —
+see EVASION.md §5.2).
 
 **Shipped (v0.8.2):** Chromium stealth depth enhancement.
 `internal/engine/stealth.js` grew from ~110 → ~280 lines with
