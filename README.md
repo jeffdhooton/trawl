@@ -400,6 +400,10 @@ The Unix-pipeline answer for LLM extraction is: pipe `trawl scrape
 ... --format markdown` into whatever LLM tool you prefer. Trawl's job
 ends at clean content.
 
+## Author
+
+Built by [Jeff Hooton](https://hooton.codes) · [GitHub](https://github.com/jeffdhooton)
+
 ## License
 
 TBD.
