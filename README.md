@@ -102,6 +102,13 @@ trawl batch companies.csv \
 # Resume a job that was SIGINT'd mid-crawl
 trawl resume <job-id>
 
+# Custom stealth browser (e.g. CloakBrowser) for anti-bot-protected sites
+trawl scrape https://www.fiverr.com/categories/programming-tech \
+  --tiers chromium --format markdown \
+  --browser-path ~/.cloakbrowser/chromium-145/Chromium.app/Contents/MacOS/Chromium \
+  --browser-arg="--fingerprint=48291" \
+  --browser-arg="--fingerprint-platform=macos"
+
 # Run as an MCP server (Claude Code, Cursor, Codex, etc. — see docs/MCP.md)
 trawl mcp
 ```
@@ -253,6 +260,13 @@ See [`claude-skill/README.md`](claude-skill/README.md) for details.
   keys from the first record; `--csv-columns` overrides with explicit
   dot-paths. Nested values get JSON-encoded inline so cells stay
   single-valued.
+- **Custom browser support.** `--browser-path` points trawl's chromium
+  tier at any Chromium-based binary (e.g.
+  [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) for anti-bot
+  evasion). When set, trawl uses a minimal flag set that doesn't leak
+  automation signals, lets the binary use its native UA, and passes
+  extra flags via `--browser-arg`. Beats PerimeterX-protected sites
+  that stock Chromium + stealth.js can't.
 - **Proxy support.** `--proxy http://user:pass@host:port` routes all
   requests through a gateway proxy. `--proxy-file proxies.txt` loads
   a pool and assigns each target domain to a fixed proxy (per-domain-
@@ -389,12 +403,10 @@ integration, interactive actions, webhooks, pricing-aware logic — see
 **Trawl is also not a bypass tool.** For sites that actively fight
 back against automated traffic, trawl's design intent is a tiered
 opt-in evasion model (realistic browser headers, chromium stealth
-patches, optional TLS fingerprint forgery) with explicit refusals
-for CAPTCHA-solving services, credential-based auth bypass, and DoS-
-level rate patterns. See `docs/EVASION.md` for the considered stance
-— that doc locks in the principled shape before any of it ships, so
-the eventual implementation preserves trawl's polite-by-default
-identity rather than drifting into an arms-race tool.
+patches, optional TLS fingerprint forgery, BYO stealth browser via
+`--browser-path`) with explicit refusals for CAPTCHA-solving
+services, credential-based auth bypass, and DoS-level rate patterns.
+See `docs/EVASION.md` for the considered stance.
 
 The Unix-pipeline answer for LLM extraction is: pipe `trawl scrape
 ... --format markdown` into whatever LLM tool you prefer. Trawl's job

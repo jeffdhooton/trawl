@@ -89,6 +89,8 @@ func Run(ctx context.Context, jobDir string, cfg *Config) error {
 	chromiumCfg := engine.DefaultChromiumConfig()
 	chromiumCfg.ViewportWidth = cfg.ViewportWidth
 	chromiumCfg.ViewportHeight = cfg.ViewportHeight
+	chromiumCfg.ExecPath = cfg.BrowserPath
+	chromiumCfg.ExtraArgs = cfg.BrowserArgs
 	jobEvasion := EvasionOpts{
 		BrowserLike:       cfg.BrowserLike,
 		UserAgentStrategy: cfg.UserAgentStrategy,
@@ -289,6 +291,8 @@ type ScrapeOpts struct {
 	ScreenshotDir  string
 	ViewportWidth  int
 	ViewportHeight int
+	BrowserPath    string
+	BrowserArgs    []string
 	CacheEnabled   bool
 	CacheTTL       time.Duration
 	CachePath      string
@@ -340,6 +344,8 @@ func RunOne(parentCtx context.Context, rawURL string, opts ScrapeOpts) (output.R
 	chromiumCfg := engine.DefaultChromiumConfig()
 	chromiumCfg.ViewportWidth = opts.ViewportWidth
 	chromiumCfg.ViewportHeight = opts.ViewportHeight
+	chromiumCfg.ExecPath = opts.BrowserPath
+	chromiumCfg.ExtraArgs = opts.BrowserArgs
 	if err := ApplyEvasion(&httpCfg, &gateCfg, &chromiumCfg, opts.Evasion); err != nil {
 		return output.Record{}, err
 	}

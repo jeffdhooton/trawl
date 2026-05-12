@@ -55,7 +55,7 @@ func buildRouter(tiers []string, forceTier string, httpCfg engine.HTTPConfig, ch
 					ccfg.Headless = defaults.Headless
 				}
 			}
-			if ccfg.UserAgent == "" {
+			if ccfg.UserAgent == "" && ccfg.ExecPath == "" {
 				ccfg.UserAgent = httpCfg.UserAgent
 			}
 			engines = append(engines, engine.NewChromium(ccfg))

@@ -27,6 +27,8 @@ type scrapeOpts struct {
 	noMetadata     bool
 	screenshotDir  string
 	viewport       string
+	browserPath    string
+	browserArgs    []string
 	cacheEnabled   bool
 	cacheTTL       time.Duration
 	cachePath      string
@@ -89,6 +91,10 @@ Use --selector name=css multiple times to extract structured fields:
 		"directory to write full-page PNG screenshots into. Only chromium-served pages produce a file.")
 	cmd.Flags().StringVar(&opts.viewport, "viewport", "",
 		`chromium window size as WxH (e.g. "1920x1080"). Affects screenshot width and any width-sensitive responsive rendering. Chromium tier only.`)
+	cmd.Flags().StringVar(&opts.browserPath, "browser-path", "",
+		"path to a custom Chromium binary (e.g. CloakBrowser). Empty = auto-detect system Chrome.")
+	cmd.Flags().StringArrayVar(&opts.browserArgs, "browser-arg", nil,
+		`extra Chromium CLI flag passed to the browser process (repeatable, e.g. --browser-arg="--fingerprint=12345")`)
 	cmd.Flags().BoolVar(&opts.cacheEnabled, "cache", false,
 		"opt in to the cross-job content cache. Cached entries short-circuit the tier loop on hit.")
 	cmd.Flags().DurationVar(&opts.cacheTTL, "cache-ttl", 24*time.Hour,
@@ -151,6 +157,8 @@ func runScrape(parentCtx context.Context, rawURL string, opts scrapeOpts) error 
 		ScreenshotDir:  opts.screenshotDir,
 		ViewportWidth:  vpW,
 		ViewportHeight: vpH,
+		BrowserPath:   opts.browserPath,
+		BrowserArgs:   opts.browserArgs,
 		CacheEnabled:   opts.cacheEnabled,
 		CacheTTL:       opts.cacheTTL,
 		CachePath:      opts.cachePath,

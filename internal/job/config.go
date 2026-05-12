@@ -57,6 +57,8 @@ type Config struct {
 	ScreenshotDir  string   `json:"screenshot_dir,omitempty"`
 	ViewportWidth  int      `json:"viewport_width,omitempty"`
 	ViewportHeight int      `json:"viewport_height,omitempty"`
+	BrowserPath    string   `json:"browser_path,omitempty"`
+	BrowserArgs    []string `json:"browser_args,omitempty"`
 	SchemaPath     string   `json:"schema_path,omitempty"`
 	CSVColumns     []string `json:"csv_columns,omitempty"`
 	Retries        int      `json:"retries,omitempty"`

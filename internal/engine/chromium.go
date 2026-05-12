@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,10 @@ type ChromiumConfig struct {
 	// media-query state across runs.
 	ViewportWidth  int
 	ViewportHeight int
+	// ExtraArgs are raw Chromium CLI flags passed directly to the
+	// browser process (e.g. "--fingerprint=12345"). Useful with
+	// custom browsers like CloakBrowser that accept non-standard flags.
+	ExtraArgs []string
 }
 
 // DefaultChromiumConfig returns chromium defaults geared toward scraping.
@@ -118,42 +123,68 @@ func (c *Chromium) allocator(parent context.Context) (context.Context, error) {
 		return c.allocCtx, nil
 	}
 
-	opts := append(
-		chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.DisableGPU,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.NoFirstRun,
-		chromedp.Flag("disable-background-networking", true),
-		chromedp.Flag("disable-background-timer-throttling", true),
-		chromedp.Flag("disable-backgrounding-occluded-windows", true),
-		chromedp.Flag("disable-breakpad", true),
-		chromedp.Flag("disable-client-side-phishing-detection", true),
-		chromedp.Flag("disable-default-apps", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-extensions", true),
-		chromedp.Flag("disable-features", "site-per-process,TranslateUI"),
-		chromedp.Flag("disable-hang-monitor", true),
-		chromedp.Flag("disable-ipc-flooding-protection", true),
-		chromedp.Flag("disable-popup-blocking", true),
-		chromedp.Flag("disable-prompt-on-repost", true),
-		chromedp.Flag("disable-renderer-backgrounding", true),
-		chromedp.Flag("disable-sync", true),
-		chromedp.Flag("metrics-recording-only", true),
-		chromedp.Flag("mute-audio", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("safebrowsing-disable-auto-update", true),
-	)
+	var opts []chromedp.ExecAllocatorOption
+
+	if c.cfg.ExecPath != "" {
+		// Custom browser: use a minimal flag set so we don't leak
+		// automation signals that DefaultExecAllocatorOptions adds
+		// (--enable-automation, --disable-extensions, --password-store=basic,
+		// --use-mock-keychain, --metrics-recording-only).
+		opts = []chromedp.ExecAllocatorOption{
+			chromedp.ExecPath(c.cfg.ExecPath),
+			chromedp.NoFirstRun,
+			chromedp.NoDefaultBrowserCheck,
+			chromedp.DisableGPU,
+			chromedp.Flag("no-sandbox", true),
+			chromedp.Flag("disable-background-networking", true),
+			chromedp.Flag("disable-breakpad", true),
+			chromedp.Flag("disable-dev-shm-usage", true),
+			chromedp.Flag("disable-sync", true),
+			chromedp.Flag("mute-audio", true),
+		}
+	} else {
+		opts = append(
+			chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.DisableGPU,
+			chromedp.NoDefaultBrowserCheck,
+			chromedp.NoFirstRun,
+			chromedp.Flag("disable-background-networking", true),
+			chromedp.Flag("disable-background-timer-throttling", true),
+			chromedp.Flag("disable-backgrounding-occluded-windows", true),
+			chromedp.Flag("disable-breakpad", true),
+			chromedp.Flag("disable-client-side-phishing-detection", true),
+			chromedp.Flag("disable-default-apps", true),
+			chromedp.Flag("disable-dev-shm-usage", true),
+			chromedp.Flag("disable-extensions", true),
+			chromedp.Flag("disable-features", "site-per-process,TranslateUI"),
+			chromedp.Flag("disable-hang-monitor", true),
+			chromedp.Flag("disable-ipc-flooding-protection", true),
+			chromedp.Flag("disable-popup-blocking", true),
+			chromedp.Flag("disable-prompt-on-repost", true),
+			chromedp.Flag("disable-renderer-backgrounding", true),
+			chromedp.Flag("disable-sync", true),
+			chromedp.Flag("metrics-recording-only", true),
+			chromedp.Flag("mute-audio", true),
+			chromedp.Flag("no-sandbox", true),
+			chromedp.Flag("safebrowsing-disable-auto-update", true),
+		)
+	}
 	if c.cfg.Headless {
 		opts = append(opts, chromedp.Headless)
-	}
-	if c.cfg.ExecPath != "" {
-		opts = append(opts, chromedp.ExecPath(c.cfg.ExecPath))
 	}
 	if c.cfg.UserAgent != "" {
 		opts = append(opts, chromedp.UserAgent(c.cfg.UserAgent))
 	}
 	if c.cfg.ProxyURL != "" {
 		opts = append(opts, chromedp.ProxyServer(c.cfg.ProxyURL))
+	}
+	for _, arg := range c.cfg.ExtraArgs {
+		a := strings.TrimLeft(arg, "-")
+		if k, v, ok := strings.Cut(a, "="); ok {
+			opts = append(opts, chromedp.Flag(k, v))
+		} else {
+			opts = append(opts, chromedp.Flag(a, true))
+		}
 	}
 	if c.cfg.ViewportWidth > 0 && c.cfg.ViewportHeight > 0 {
 		opts = append(opts, chromedp.WindowSize(c.cfg.ViewportWidth, c.cfg.ViewportHeight))
